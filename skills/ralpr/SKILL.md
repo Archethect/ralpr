@@ -42,17 +42,19 @@ State persists as hidden PR comments with **phase-specific markers**:
 
 **Review Phase:**
 ```bash
+# Use grep -oE (extended regex, works on macOS and Linux)
 REVIEW_STATE=$(gh pr view <N> --json comments --jq '
-  .comments[] | select(.body | contains("RALPR_REVIEW_STATE")) | .body
-' | head -1 | grep -oP '(?<=<!-- RALPR_REVIEW_STATE )\{[^}]+\}(?= -->)')
+  [.comments[] | select(.body | contains("RALPR_REVIEW_STATE")) | .body] | first // empty
+' | grep -oE '\{"iteration":[^}]+\}')
 [ -z "$REVIEW_STATE" ] && REVIEW_STATE='{"iteration":0,"cumulative_score":0,"confidence":40}'
 ```
 
 **Refactor Phase:**
 ```bash
+# Use grep -oE (extended regex, works on macOS and Linux)
 REFACTOR_STATE=$(gh pr view <N> --json comments --jq '
-  .comments[] | select(.body | contains("RALPR_REFACTOR_STATE")) | .body
-' | head -1 | grep -oP '(?<=<!-- RALPR_REFACTOR_STATE )\{[^}]+\}(?= -->)')
+  [.comments[] | select(.body | contains("RALPR_REFACTOR_STATE")) | .body] | first // empty
+' | grep -oE '\{"iteration":[^}]+\}')
 [ -z "$REFACTOR_STATE" ] && REFACTOR_STATE='{"iteration":0,"confidence":0}'
 ```
 
@@ -61,9 +63,10 @@ REFACTOR_STATE=$(gh pr view <N> --json comments --jq '
 **Review Phase:**
 ```bash
 # Delete existing review comment
-COMMENT_ID=$(gh pr view <N> --json comments --jq '
-  .comments[] | select(.body | contains("RALPR_REVIEW_STATE")) | .id
-' | head -1)
+# NOTE: Use REST API to get numeric IDs (gh pr view returns GraphQL node IDs which cause 404)
+COMMENT_ID=$(gh api repos/{owner}/{repo}/issues/<N>/comments --jq '
+  [.[] | select(.body | contains("RALPR_REVIEW_STATE"))] | first | .id // empty
+')
 [ -n "$COMMENT_ID" ] && gh api repos/{owner}/{repo}/issues/comments/$COMMENT_ID -X DELETE
 
 # Create new
@@ -73,9 +76,10 @@ gh pr comment <N> --body "$REVIEW_BODY"
 **Refactor Phase (preserves review comment):**
 ```bash
 # Delete existing REFACTOR comment only
-COMMENT_ID=$(gh pr view <N> --json comments --jq '
-  .comments[] | select(.body | contains("RALPR_REFACTOR_STATE")) | .id
-' | head -1)
+# NOTE: Use REST API to get numeric IDs (gh pr view returns GraphQL node IDs which cause 404)
+COMMENT_ID=$(gh api repos/{owner}/{repo}/issues/<N>/comments --jq '
+  [.[] | select(.body | contains("RALPR_REFACTOR_STATE"))] | first | .id // empty
+')
 [ -n "$COMMENT_ID" ] && gh api repos/{owner}/{repo}/issues/comments/$COMMENT_ID -X DELETE
 
 # Create new
