@@ -95,7 +95,7 @@ run_refactor_phase() {
   local review_confidence
   review_confidence=$(get_confidence_from_label "$PR_NUMBER")
 
-  if [[ -z "$review_confidence" ]] || [[ "$review_confidence" -lt 90 ]]; then
+  if [[ -z "$review_confidence" ]] || [[ "$review_confidence" -lt "$REVIEW_THRESHOLD" ]]; then
     log_warn "PR #$PR_NUMBER has not passed review phase (confidence: ${review_confidence:-none})"
     log_warn "Run review phase first: ralpr review --pr $PR_NUMBER"
     return 1

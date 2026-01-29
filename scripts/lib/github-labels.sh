@@ -284,18 +284,24 @@ get_current_phase() {
 }
 
 # Get confidence score from label (if any)
+# Searches ALL ralpr labels on the PR for a confidence pattern,
+# not just the first one (avoids grabbing e.g. ralpr:impl:done).
 get_confidence_from_label() {
   local pr_number="$1"
 
-  local label
-  label=$(get_ralpr_label "$pr_number")
+  local labels
+  labels=$(gh pr view "$pr_number" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
 
-  # Extract number from ralpr:review:XX or ralpr:refactor:XX
-  if echo "$label" | grep -qE '^ralpr:(review|refactor):[0-9]+$'; then
-    echo "$label" | sed 's/.*://'
-  else
-    echo ""
-  fi
+  # Find the first label matching ralpr:(review|refactor):<number>
+  local pattern='^ralpr:(review|refactor):([0-9]+)$'
+  while IFS= read -r label; do
+    if [[ "$label" =~ $pattern ]]; then
+      echo "${BASH_REMATCH[2]}"
+      return 0
+    fi
+  done <<< "$labels"
+
+  echo ""
 }
 
 # Determine next phase based on current state
@@ -338,11 +344,11 @@ is_ready_for_phase() {
       [ "$current" = "impl:done" ]
       ;;
     refactor)
-      # Ready for refactor if review confidence >= 90
+      # Ready for refactor if review confidence >= REVIEW_THRESHOLD
       if [ "$current" = "review:complete" ]; then
         local conf
         conf=$(get_confidence_from_label "$pr_number")
-        [ -n "$conf" ] && [ "$conf" -ge 90 ]
+        [ -n "$conf" ] && [ "$conf" -ge "${REVIEW_THRESHOLD:-85}" ]
       else
         return 1
       fi
