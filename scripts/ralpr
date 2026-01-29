@@ -125,17 +125,42 @@ cmd_setup() {
 # ============================================================================
 cmd_select() {
   local issue_num=""
+  local pr_num=""
   local dry_run=false
   local phase=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --issue) issue_num="$2"; shift 2 ;;
+      --pr) pr_num="$2"; shift 2 ;;
       --phase) phase="$2"; shift 2 ;;
       --dry-run) dry_run=true; shift ;;
       *) log_error "Unknown option: $1"; return 1 ;;
     esac
   done
+
+  # Explicit --pr: validate and return early (skip auto-selection)
+  if [[ -n "$pr_num" ]]; then
+    local pr_data
+    pr_data=$(gh pr view "$pr_num" --json number,title,state,labels 2>/dev/null || echo "")
+    if [[ -z "$pr_data" ]]; then
+      log_error "PR #$pr_num not found"
+      ralpr_result '{"status":"error","code":"not_found","message":"PR not found"}'
+      exit 1
+    fi
+
+    local pr_title pr_state
+    pr_title=$(echo "$pr_data" | jq -r '.title')
+    pr_state=$(echo "$pr_data" | jq -r '.state')
+
+    log_info "Using specified PR #$pr_num: $pr_title (state: $pr_state)"
+    if [[ "$dry_run" == "true" ]]; then
+      ralpr_result "{\"status\":\"dry_run\",\"type\":\"pr\",\"number\":$pr_num,\"title\":$(echo "$pr_title" | jq -R .),\"reason\":\"specified\"}"
+    else
+      ralpr_result "{\"status\":\"selected\",\"type\":\"pr\",\"number\":$pr_num,\"title\":$(echo "$pr_title" | jq -R .),\"reason\":\"specified\"}"
+    fi
+    exit 0
+  fi
 
   # Phase-specific PR selection (review or refactor)
   if [[ -n "$phase" ]]; then
