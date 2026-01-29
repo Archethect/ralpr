@@ -1,0 +1,11 @@
+query($owner: String!, $repo: String!, $issue: Int!) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $issue) {
+      closedByPullRequestsReferences(first: 10, includeClosedPrs: false) {
+        nodes {
+          number
+        }
+      }
+    }
+  }
+}

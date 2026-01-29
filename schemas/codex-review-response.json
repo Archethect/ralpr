@@ -1,0 +1,246 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex Review Response",
+  "description": "JSON schema for responses from Codex 5.2 xhigh third-party code review",
+  "type": "object",
+  "required": ["request_id", "status"],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^atw-[0-9]+-review-v[0-9]+$",
+      "description": "Matching request identifier"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "partial", "error"],
+      "description": "Review completion status"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["APPROVED", "NEEDS_CHANGES"],
+      "description": "Overall review verdict (required if status is completed)"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence in the overall verdict (0.0 to 1.0)"
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "assessment": {
+          "type": "string",
+          "description": "Brief overall assessment of the changes"
+        },
+        "strengths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Things done well in this implementation"
+        },
+        "key_concerns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Main areas that need attention"
+        }
+      },
+      "description": "Summary of the review findings"
+    },
+    "issues": {
+      "type": "object",
+      "properties": {
+        "critical": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Issue"
+          },
+          "description": "Critical issues that must be fixed before merge"
+        },
+        "important": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Issue"
+          },
+          "description": "Important issues that should be fixed"
+        },
+        "minor": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Issue"
+          },
+          "description": "Minor issues that are nice to fix but not blocking"
+        }
+      },
+      "description": "Categorized list of issues found"
+    },
+    "acceptance_criteria_verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ac_id", "status"],
+        "properties": {
+          "ac_id": {
+            "type": "string",
+            "description": "Acceptance criterion identifier (e.g., AC1, AC2)"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pass", "fail", "partial", "not_verified"],
+            "description": "Verification status"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Explanation of verification result"
+          }
+        }
+      },
+      "description": "Verification status for each acceptance criterion"
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["mcp_failure", "parse_error", "timeout", "diff_too_large"],
+          "description": "Type of error"
+        },
+        "message": {
+          "type": "string",
+          "description": "Error message"
+        },
+        "recoverable": {
+          "type": "boolean",
+          "description": "Whether the error can be recovered from"
+        }
+      },
+      "description": "Error details (present if status is error)"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Non-fatal warnings about the review"
+    },
+    "raw_response": {
+      "type": "string",
+      "description": "Raw response from Codex (included if parsing failed)"
+    }
+  },
+  "definitions": {
+    "Issue": {
+      "type": "object",
+      "required": ["id", "category", "title", "description", "location", "confidence"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][0-9]{3}$",
+          "description": "Unique issue identifier (e.g., C001 for critical, I001 for important, M001 for minor)"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["security", "bug", "testing", "logic", "performance", "convention", "documentation", "other"],
+          "description": "Category of the issue"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Short descriptive title"
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed description of the issue"
+        },
+        "location": {
+          "type": "object",
+          "required": ["file"],
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "File path"
+            },
+            "line_start": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Starting line number"
+            },
+            "line_end": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Ending line number"
+            },
+            "function": {
+              "type": "string",
+              "description": "Function or method name (if applicable)"
+            }
+          },
+          "description": "Location of the issue in the codebase"
+        },
+        "impact": {
+          "type": "string",
+          "description": "What could go wrong if this issue is not fixed"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence that this is a real issue (0.0 to 1.0)"
+        },
+        "proposed_fix": {
+          "$ref": "#/definitions/ProposedFix"
+        }
+      }
+    },
+    "ProposedFix": {
+      "type": "object",
+      "required": ["description", "changes"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Explanation of how this fix addresses the issue"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FileChange"
+          },
+          "minItems": 1,
+          "description": "List of file changes to apply"
+        },
+        "verification": {
+          "type": "string",
+          "description": "How to verify this fix works"
+        }
+      },
+      "description": "Proposed fix for the issue"
+    },
+    "FileChange": {
+      "type": "object",
+      "required": ["file", "operation"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to the file"
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["modify", "create", "delete", "rename"],
+          "description": "Type of file operation"
+        },
+        "diff": {
+          "type": "string",
+          "description": "Unified diff format for modifications, full content for creates"
+        },
+        "rename_to": {
+          "type": "string",
+          "description": "New file path (for rename operations)"
+        }
+      },
+      "description": "A single file change in a proposed fix"
+    }
+  }
+}

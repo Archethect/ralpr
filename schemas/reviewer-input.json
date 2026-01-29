@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Reviewer Input (QA/Domain/Codex)",
+  "description": "Input contract for all reviewer agents. Context from understand-agent is REQUIRED.",
+  "type": "object",
+  "required": ["pr_number", "branch", "base_branch", "context"],
+  "properties": {
+    "pr_number": {
+      "type": "integer",
+      "description": "GitHub PR number being reviewed"
+    },
+    "branch": {
+      "type": "string",
+      "description": "Feature branch name"
+    },
+    "base_branch": {
+      "type": "string",
+      "description": "Base branch (e.g., main, develop)"
+    },
+    "working_dir": {
+      "type": "string",
+      "description": "Working directory path (for QA/Domain that read local files)"
+    },
+    "map_path": {
+      "type": "string",
+      "description": "Path to codebase map file"
+    },
+    "repo": {
+      "type": "string",
+      "description": "GitHub repo in owner/repo format (for Codex gh CLI fetch)"
+    },
+    "context": {
+      "type": "object",
+      "description": "OUTPUT from understand-agent - REQUIRED. Do NOT re-fetch PR details.",
+      "properties": {
+        "summary": { "type": "string" },
+        "files_changed": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "patterns_used": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "unresolved_comments": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      },
+      "required": ["summary", "files_changed"]
+    },
+    "focus_areas": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Specific areas to focus on, from understand-agent's focus_areas[reviewer_type]"
+    }
+  }
+}

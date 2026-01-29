@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Review+Fix Agent Output",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["approved", "failed", "error"]
+    },
+    "passes": {
+      "type": "integer",
+      "description": "Total review passes executed"
+    },
+    "codex_runs": {
+      "type": "integer",
+      "description": "Number of Codex reviews run"
+    },
+    "final_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "issues_resolved": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "auto_applied_fixes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "confidence": { "type": "number" },
+          "file": { "type": "string" }
+        }
+      }
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sha": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "minor_issues_noted": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "reason": {
+      "type": "string",
+      "enum": ["max_passes_exceeded", "unresolvable_issue", "codex_error"]
+    },
+    "issues_remaining": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "attempts": { "type": "integer" }
+        }
+      }
+    },
+    "recommendation": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  }
+}

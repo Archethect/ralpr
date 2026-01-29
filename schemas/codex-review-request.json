@@ -1,0 +1,188 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex Review Request",
+  "description": "JSON schema for requests to Codex 5.2 xhigh third-party code review",
+  "type": "object",
+  "required": ["request_id", "review_type", "model", "reasoning_effort", "context", "content"],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^ralpr-[0-9]+-review-v[0-9]+$",
+      "description": "Unique identifier for this review request (format: ralpr-{issue_number}-review-v{version})"
+    },
+    "review_type": {
+      "type": "string",
+      "enum": ["comprehensive", "security", "performance", "conventions"],
+      "description": "Type of review to perform"
+    },
+    "model": {
+      "type": "string",
+      "enum": ["gpt-5.2-codex"],
+      "description": "Model to use for review"
+    },
+    "reasoning_effort": {
+      "type": "string",
+      "enum": ["minimal", "low", "medium", "high", "xhigh"],
+      "description": "Reasoning effort level (xhigh recommended for code review)"
+    },
+    "context": {
+      "type": "object",
+      "required": ["repository", "ticket", "git"],
+      "properties": {
+        "repository": {
+          "type": "object",
+          "required": ["owner", "name", "default_branch"],
+          "properties": {
+            "owner": {
+              "type": "string",
+              "description": "Repository owner (org or user)"
+            },
+            "name": {
+              "type": "string",
+              "description": "Repository name"
+            },
+            "default_branch": {
+              "type": "string",
+              "description": "Default branch name (main, master, etc.)"
+            }
+          }
+        },
+        "ticket": {
+          "type": "object",
+          "required": ["type", "number", "title"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["issue", "pr"],
+              "description": "Whether working on an issue or PR"
+            },
+            "number": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Issue or PR number"
+            },
+            "title": {
+              "type": "string",
+              "description": "Issue or PR title"
+            },
+            "acceptance_criteria": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "List of acceptance criteria from the ticket"
+            }
+          }
+        },
+        "git": {
+          "type": "object",
+          "required": ["base_sha", "head_sha", "branch"],
+          "properties": {
+            "base_sha": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{7,40}$",
+              "description": "Base commit SHA"
+            },
+            "head_sha": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{7,40}$",
+              "description": "Head commit SHA"
+            },
+            "branch": {
+              "type": "string",
+              "description": "Feature branch name"
+            }
+          }
+        },
+        "project_conventions": {
+          "type": "string",
+          "description": "Content of AGENTS.md or project conventions"
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "required": ["files_changed", "full_diff"],
+      "properties": {
+        "files_changed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "status", "diff"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "File path relative to repo root"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["added", "modified", "deleted", "renamed"],
+                "description": "Type of change"
+              },
+              "diff": {
+                "type": "string",
+                "description": "Unified diff for this file"
+              },
+              "old_path": {
+                "type": "string",
+                "description": "Original path (for renamed files)"
+              }
+            }
+          },
+          "description": "List of changed files with their diffs"
+        },
+        "full_diff": {
+          "type": "string",
+          "description": "Complete unified diff of all changes"
+        },
+        "test_results": {
+          "type": "object",
+          "properties": {
+            "passed": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of passing tests"
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of failing tests"
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of skipped tests"
+            },
+            "coverage_percent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Test coverage percentage"
+            },
+            "output": {
+              "type": "string",
+              "description": "Raw test output (truncated if large)"
+            }
+          },
+          "description": "Test execution results"
+        }
+      }
+    },
+    "focus_areas": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "test coverage",
+          "edge cases",
+          "security",
+          "conventions",
+          "performance",
+          "logic",
+          "documentation"
+        ]
+      },
+      "description": "Specific areas to focus the review on"
+    }
+  }
+}

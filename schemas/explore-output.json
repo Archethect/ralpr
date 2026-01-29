@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Explore Agent Output",
+  "type": "object",
+  "required": ["status", "map_path"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["complete", "partial", "error"]
+    },
+    "map_path": {
+      "type": "string",
+      "description": "Path to the generated codebase map file"
+    },
+    "error": {
+      "type": "string",
+      "description": "Error message if status is error"
+    }
+  }
+}

@@ -1,0 +1,760 @@
+#!/usr/bin/env bash
+# ralpr - Ralpr CLI v2.0 (Ralph Autonomous Loop for Pull-request Readiness)
+# Three-phase architecture: Implementation → Review → Refactor
+#
+# Usage: ralpr <command> [options]
+#
+# Commands:
+#   implementation   Run Phase 1: Implement an issue (no loops)
+#   review           Run Phase 2: Review a PR (loops + confidence)
+#   refactor         Run Phase 3: Refactor a PR (loops + confidence)
+#   setup            Check prerequisites, detect default branch
+#   select           Select next ticket (PR or issue)
+#   claim            Assign ticket to self
+#   branch           Create feature branch/worktree
+#   ci               CI operations (wait, logs, status)
+#   pr               PR operations (check-conflicts, create, verify)
+#   release          Release assignment from ticket
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+QUERIES_DIR="$SCRIPT_DIR/queries"
+
+# Source common functions
+source "$SCRIPT_DIR/lib/common.sh"
+
+# ============================================================================
+# HELPER: Check if issue has a "done" PR (passing CI, no unresolved comments)
+# ============================================================================
+issue_has_done_pr() {
+  local issue_num="$1"
+  local owner repo
+  owner=$(get_owner)
+  repo=$(get_repo)
+
+  # Find open PRs that are linked to close this issue
+  local linked_prs
+  linked_prs=$(gh api graphql -f query="$(cat "$QUERIES_DIR/issue-closing-prs.graphql")" \
+    -f owner="$owner" -f repo="$repo" -F issue="$issue_num" \
+    --jq '.data.repository.issue.closedByPullRequestsReferences.nodes[].number' 2>/dev/null)
+
+  if [[ -z "$linked_prs" ]]; then
+    return 1
+  fi
+
+  for pr_num in $linked_prs; do
+    local unresolved
+    unresolved=$(gh api graphql -f query="$(cat "$QUERIES_DIR/pr-unresolved-threads.graphql")" \
+      -f owner="$owner" -f repo="$repo" -F pr="$pr_num" \
+      --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
+
+    if [[ "$unresolved" -gt 0 ]]; then
+      continue
+    fi
+
+    local ci_failed
+    ci_failed=$(gh pr view "$pr_num" --json statusCheckRollup \
+      --jq '.statusCheckRollup[] | select(.conclusion == "FAILURE") | .conclusion' 2>/dev/null | head -1)
+
+    if [[ -z "$ci_failed" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# ============================================================================
+# SUBCOMMAND: setup
+# ============================================================================
+cmd_setup() {
+  if [[ $# -gt 0 ]]; then
+    log_error "Unknown option: $1"
+    return 1
+  fi
+
+  log_info "Checking prerequisites..."
+
+  if ! check_gh_auth; then
+    ralpr_result '{"status":"error","code":"gh_not_auth","message":"GitHub CLI not authenticated"}'
+    exit 1
+  fi
+
+  if ! check_git_clean; then
+    ralpr_result '{"status":"error","code":"dirty_git","message":"Working directory not clean"}'
+    exit 2
+  fi
+
+  local default_branch
+  default_branch=$(get_default_branch)
+
+  if [[ -z "$default_branch" ]]; then
+    log_error "No default branch found on remote"
+    ralpr_result '{"status":"error","code":"no_default_branch","message":"No default branch configured on GitHub"}'
+    exit 3
+  fi
+
+  log_info "Default branch: $default_branch"
+  log_info "Fetching from origin..."
+  git fetch origin "$default_branch"
+
+  local worktree_base
+  if [[ -d ".worktrees" ]]; then
+    worktree_base=".worktrees"
+  elif [[ -d "worktrees" ]]; then
+    worktree_base="worktrees"
+  else
+    worktree_base=".worktrees"
+  fi
+
+  if ! git check-ignore -q "$worktree_base" 2>/dev/null; then
+    log_warn "$worktree_base not in .gitignore"
+  fi
+
+  log_info "Setup complete"
+  ralpr_result "{\"status\":\"ready\",\"default_branch\":\"$default_branch\",\"worktree_base\":\"$worktree_base\"}"
+  exit 0
+}
+
+# ============================================================================
+# SUBCOMMAND: select
+# ============================================================================
+cmd_select() {
+  local issue_num=""
+  local dry_run=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --issue) issue_num="$2"; shift 2 ;;
+      --dry-run) dry_run=true; shift ;;
+      *) log_error "Unknown option: $1"; return 1 ;;
+    esac
+  done
+
+  if [[ -n "$issue_num" ]]; then
+    local title
+    title=$(gh issue view "$issue_num" --json title --jq '.title' 2>/dev/null || echo "")
+    if [[ -z "$title" ]]; then
+      log_error "Issue #$issue_num not found"
+      ralpr_result '{"status":"error","code":"not_found","message":"Issue not found"}'
+      exit 1
+    fi
+    log_info "Using specified issue #$issue_num: $title"
+    ralpr_result "{\"status\":\"selected\",\"type\":\"issue\",\"number\":$issue_num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"specified\"}"
+    exit 0
+  fi
+
+  local owner repo
+  owner=$(get_owner)
+  repo=$(get_repo)
+
+  # Check for PRs needing attention
+  log_info "Checking for PRs needing attention..."
+  local prs_needing_attention=()
+  local pr_list
+  pr_list=$(gh pr list --state open --json number,title,createdAt,assignees --jq '.[] | select(.assignees | length == 0)')
+
+  while IFS= read -r pr_json; do
+    [[ -z "$pr_json" ]] && continue
+    local pr_num created_at title
+    pr_num=$(echo "$pr_json" | jq -r '.number')
+    created_at=$(echo "$pr_json" | jq -r '.createdAt')
+    title=$(echo "$pr_json" | jq -r '.title')
+
+    local unresolved
+    unresolved=$(gh api graphql -f query="$(cat "$QUERIES_DIR/pr-unresolved-threads.graphql")" \
+      -f owner="$owner" -f repo="$repo" -F pr="$pr_num" \
+      --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
+
+    if [[ "$unresolved" -gt 0 ]]; then
+      prs_needing_attention+=("$created_at|pr|$pr_num|$title|unresolved_comments")
+      continue
+    fi
+
+    local ci_status
+    ci_status=$(gh pr view "$pr_num" --json statusCheckRollup --jq '.statusCheckRollup[] | select(.conclusion == "FAILURE") | .conclusion' 2>/dev/null | head -1)
+
+    if [[ "$ci_status" == "FAILURE" ]]; then
+      prs_needing_attention+=("$created_at|pr|$pr_num|$title|failing_ci")
+    fi
+  done < <(gh pr list --state open --json number,title,createdAt,assignees --jq '.[] | select(.assignees | length == 0)' 2>/dev/null)
+
+  # Check for bug issues
+  log_info "Checking for bug issues..."
+  local bug_issues=()
+  local bug_labels=("bug" "type:bug" "kind:bug")
+
+  for label in "${bug_labels[@]}"; do
+    while IFS= read -r issue_json; do
+      [[ -z "$issue_json" ]] && continue
+      local num title
+      num=$(echo "$issue_json" | jq -r '.number')
+      title=$(echo "$issue_json" | jq -r '.title')
+
+      if issue_has_done_pr "$num"; then
+        continue
+      fi
+
+      bug_issues+=("$num|issue|$num|$title|bug")
+    done < <(gh issue list --state open --label "$label" --json number,title,assignees \
+      --jq '.[] | select(.assignees | length == 0)' 2>/dev/null)
+  done
+
+  # Deduplicate bugs
+  local unique_bugs=()
+  local seen_nums=""
+  if [[ ${#bug_issues[@]} -gt 0 ]]; then
+    for bug in "${bug_issues[@]}"; do
+      local num
+      num=$(echo "$bug" | cut -d'|' -f3)
+      if [[ ! "$seen_nums" =~ (^|,)"$num"(,|$) ]]; then
+        unique_bugs+=("$bug")
+        seen_nums="$seen_nums,$num"
+      fi
+    done
+  fi
+  bug_issues=("${unique_bugs[@]+"${unique_bugs[@]}"}")
+
+  # Combine precedence pool
+  local precedence_pool=()
+  precedence_pool+=("${prs_needing_attention[@]+"${prs_needing_attention[@]}"}")
+  precedence_pool+=("${bug_issues[@]+"${bug_issues[@]}"}")
+
+  if [[ ${#precedence_pool[@]} -gt 0 ]]; then
+    local selected
+    selected=$(printf '%s\n' "${precedence_pool[@]}" | sort | head -1)
+
+    local type num title reason
+    type=$(echo "$selected" | cut -d'|' -f2)
+    num=$(echo "$selected" | cut -d'|' -f3)
+    title=$(echo "$selected" | cut -d'|' -f4)
+    reason=$(echo "$selected" | cut -d'|' -f5)
+
+    log_info "Selected $type #$num (precedence: $reason)"
+
+    if [[ "$dry_run" == "true" ]]; then
+      ralpr_result "{\"status\":\"dry_run\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"$reason\"}"
+    else
+      ralpr_result "{\"status\":\"selected\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"$reason\"}"
+    fi
+    exit 0
+  fi
+
+  # Check feature issues by priority
+  log_info "Checking feature issues..."
+  local feature_issues=()
+  local priority_labels=("priority:p0" "P0" "priority:p1" "P1" "priority:p2" "P2")
+
+  for label in "${priority_labels[@]}"; do
+    while IFS= read -r issue_json; do
+      [[ -z "$issue_json" ]] && continue
+      local num title
+      num=$(echo "$issue_json" | jq -r '.number')
+      title=$(echo "$issue_json" | jq -r '.title')
+
+      local body
+      body=$(gh issue view "$num" --json body --jq '.body' 2>/dev/null || echo "")
+      local has_unmet_deps=false
+
+      if [[ "$body" =~ [Dd]epends\ on:?\ *#([0-9]+) ]]; then
+        local dep_num="${BASH_REMATCH[1]}"
+        local dep_state
+        dep_state=$(gh issue view "$dep_num" --json state --jq '.state' 2>/dev/null || echo "OPEN")
+        if [[ "$dep_state" != "CLOSED" ]]; then
+          has_unmet_deps=true
+        fi
+      fi
+
+      if [[ "$has_unmet_deps" == "false" ]]; then
+        if issue_has_done_pr "$num"; then
+          continue
+        fi
+
+        local priority_rank=9
+        case "$label" in
+          priority:p0|P0) priority_rank=0 ;;
+          priority:p1|P1) priority_rank=1 ;;
+          priority:p2|P2) priority_rank=2 ;;
+        esac
+        feature_issues+=("$priority_rank|$num|issue|$num|$title|feature_$label")
+      fi
+    done < <(gh issue list --state open --label "$label" --json number,title,assignees \
+      --jq '.[] | select(.assignees | length == 0)' 2>/dev/null)
+  done
+
+  if [[ ${#feature_issues[@]} -gt 0 ]]; then
+    local selected
+    selected=$(printf '%s\n' "${feature_issues[@]}" | sort -t'|' -k1,1n -k2,2n | head -1)
+
+    local type num title reason
+    type=$(echo "$selected" | cut -d'|' -f3)
+    num=$(echo "$selected" | cut -d'|' -f4)
+    title=$(echo "$selected" | cut -d'|' -f5)
+    reason=$(echo "$selected" | cut -d'|' -f6)
+
+    log_info "Selected $type #$num (reason: $reason)"
+
+    if [[ "$dry_run" == "true" ]]; then
+      ralpr_result "{\"status\":\"dry_run\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"$reason\"}"
+    else
+      ralpr_result "{\"status\":\"selected\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"$reason\"}"
+    fi
+    exit 0
+  fi
+
+  log_info "No issues available for selection"
+  ralpr_result '{"status":"none","message":"No ready tickets found"}'
+  exit 1
+}
+
+# ============================================================================
+# SUBCOMMAND: claim
+# ============================================================================
+cmd_claim() {
+  local type=""
+  local number=""
+
+  if [[ $# -lt 2 ]]; then
+    log_error "Usage: ralpr claim <issue|pr> <number>"
+    exit 1
+  fi
+
+  type="$1"
+  number="$2"
+
+  case "$type" in
+    issue)
+      log_info "Claiming issue #$number..."
+
+      local assignees
+      assignees=$(gh issue view "$number" --json assignees --jq '.assignees | length')
+      if [[ "$assignees" -gt 0 ]]; then
+        log_error "Issue #$number is already assigned"
+        ralpr_result '{"status":"error","code":"already_assigned","message":"Issue already assigned"}'
+        exit 1
+      fi
+
+      gh issue edit "$number" --add-assignee @me
+      gh issue edit "$number" --remove-label "status:backlog" 2>/dev/null || true
+      gh issue edit "$number" --add-label "status:in-progress" 2>/dev/null || true
+
+      log_info "Claimed issue #$number"
+      ralpr_result "{\"status\":\"claimed\",\"type\":\"issue\",\"number\":$number}"
+      ;;
+
+    pr)
+      log_info "Claiming PR #$number..."
+
+      local assignees
+      assignees=$(gh pr view "$number" --json assignees --jq '.assignees | length')
+      if [[ "$assignees" -gt 0 ]]; then
+        log_error "PR #$number is already assigned"
+        ralpr_result '{"status":"error","code":"already_assigned","message":"PR already assigned"}'
+        exit 1
+      fi
+
+      gh pr edit "$number" --add-assignee @me
+      log_info "Claimed PR #$number"
+      ralpr_result "{\"status\":\"claimed\",\"type\":\"pr\",\"number\":$number}"
+      ;;
+
+    *)
+      log_error "Unknown type: $type (expected 'issue' or 'pr')"
+      exit 1
+      ;;
+  esac
+
+  exit 0
+}
+
+# ============================================================================
+# SUBCOMMAND: branch
+# ============================================================================
+cmd_branch() {
+  local issue_num=""
+  local title_slug=""
+  local worktree_base=".worktrees"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --issue) issue_num="$2"; shift 2 ;;
+      --title) title_slug="$2"; shift 2 ;;
+      --worktree-base) worktree_base="$2"; shift 2 ;;
+      *) log_error "Unknown option: $1"; return 1 ;;
+    esac
+  done
+
+  if [[ -z "$issue_num" ]]; then
+    log_error "Usage: ralpr branch --issue <number> [--title <slug>]"
+    exit 1
+  fi
+
+  if [[ -z "$title_slug" ]]; then
+    local raw_title
+    raw_title=$(gh issue view "$issue_num" --json title --jq '.title')
+    title_slug=$(slugify "$raw_title")
+  fi
+
+  local branch_name="feature/${issue_num}-${title_slug}"
+  local default_branch
+  default_branch=$(get_default_branch)
+
+  log_info "Creating branch: $branch_name"
+
+  local worktree_path="$worktree_base/$branch_name"
+
+  mkdir -p "$worktree_base"
+
+  if git worktree list | grep -q "$worktree_path"; then
+    log_warn "Worktree already exists at $worktree_path"
+    ralpr_result "{\"status\":\"exists\",\"branch\":\"$branch_name\",\"worktree\":true,\"worktree_path\":\"$worktree_path\"}"
+    exit 0
+  fi
+
+  log_info "Creating worktree at $worktree_path..."
+  git worktree add "$worktree_path" -b "$branch_name" "origin/$default_branch"
+
+  if [[ $? -ne 0 ]]; then
+    log_error "Failed to create worktree"
+    ralpr_result '{"status":"error","code":"worktree_fail","message":"Failed to create worktree"}'
+    exit 1
+  fi
+
+  log_info "Worktree created at $worktree_path"
+  ralpr_result "{\"status\":\"created\",\"branch\":\"$branch_name\",\"worktree\":true,\"worktree_path\":\"$worktree_path\"}"
+
+  exit 0
+}
+
+# ============================================================================
+# SUBCOMMAND: ci (simplified - delegates to ci-watcher.sh)
+# ============================================================================
+cmd_ci() {
+  source "$SCRIPT_DIR/lib/ci-watcher.sh"
+
+  local action=""
+  local run_num=""
+  local branch=""
+  local timeout=600
+
+  if [[ $# -lt 1 ]]; then
+    log_error "Usage: ralpr ci <wait|logs|status> [options]"
+    exit 1
+  fi
+
+  action="$1"
+  shift
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run) run_num="$2"; shift 2 ;;
+      --branch) branch="$2"; shift 2 ;;
+      --timeout) timeout="$2"; shift 2 ;;
+      *) log_error "Unknown option: $1"; return 1 ;;
+    esac
+  done
+
+  if [[ -z "$branch" ]]; then
+    branch=$(git branch --show-current)
+  fi
+
+  case "$action" in
+    status)
+      local summary
+      summary=$(get_ci_summary "$branch")
+      echo "$summary"
+      ;;
+    wait)
+      wait_for_ci "$branch" "$timeout"
+      ;;
+    logs)
+      get_failed_logs "$run_num" "$branch"
+      ;;
+    *)
+      log_error "Unknown action: $action"
+      exit 1
+      ;;
+  esac
+}
+
+# ============================================================================
+# SUBCOMMAND: pr
+# ============================================================================
+cmd_pr() {
+  local action=""
+
+  if [[ $# -lt 1 ]]; then
+    log_error "Usage: ralpr pr <check-conflicts|create|verify> [options]"
+    exit 1
+  fi
+
+  action="$1"
+  shift
+
+  case "$action" in
+    check-conflicts)
+      local base=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --base) base="$2"; shift 2 ;;
+          *) log_error "Unknown option: $1"; return 1 ;;
+        esac
+      done
+
+      if [[ -z "$base" ]]; then
+        base=$(get_default_branch)
+      fi
+
+      log_info "Checking for merge conflicts with $base..."
+      git fetch origin "$base"
+
+      local merge_base
+      merge_base=$(git merge-base HEAD "origin/$base")
+
+      if git merge-tree "$merge_base" HEAD "origin/$base" | grep -q "^<<<<<<<"; then
+        log_error "Merge conflicts detected with $base"
+        ralpr_result '{"status":"conflicts","message":"Merge conflicts exist with base branch"}'
+        exit 1
+      fi
+
+      log_info "No merge conflicts"
+      ralpr_result '{"status":"clean"}'
+      exit 0
+      ;;
+
+    create)
+      local issue_num=""
+      local title=""
+      local body=""
+      local base=""
+      local draft=false
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --issue) issue_num="$2"; shift 2 ;;
+          --title) title="$2"; shift 2 ;;
+          --body) body="$2"; shift 2 ;;
+          --base) base="$2"; shift 2 ;;
+          --draft) draft=true; shift ;;
+          *) log_error "Unknown option: $1"; return 1 ;;
+        esac
+      done
+
+      if [[ -z "$base" ]]; then
+        base=$(get_default_branch)
+      fi
+
+      log_info "Creating PR..."
+
+      local pr_args=("--base" "$base")
+      [[ -n "$title" ]] && pr_args+=("--title" "$title")
+      [[ -n "$body" ]] && pr_args+=("--body" "$body")
+      [[ "$draft" == "true" ]] && pr_args+=("--draft")
+
+      local pr_url
+      pr_url=$(gh pr create "${pr_args[@]}")
+
+      if [[ $? -ne 0 ]]; then
+        log_error "Failed to create PR"
+        ralpr_result '{"status":"error","code":"create_fail","message":"Failed to create PR"}'
+        exit 2
+      fi
+
+      local pr_number
+      pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
+
+      log_info "PR created: $pr_url"
+      ralpr_result "{\"status\":\"created\",\"url\":\"$pr_url\",\"number\":$pr_number}"
+      exit 0
+      ;;
+
+    verify)
+      local pr_number=""
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --pr) pr_number="$2"; shift 2 ;;
+          *) log_error "Unknown option: $1"; return 1 ;;
+        esac
+      done
+
+      if [[ -z "$pr_number" ]]; then
+        log_error "Usage: ralpr pr verify --pr <number>"
+        exit 1
+      fi
+
+      log_info "Verifying PR #$pr_number..."
+      sleep 3
+
+      local merge_state
+      merge_state=$(gh pr view "$pr_number" --json mergeStateStatus --jq '.mergeStateStatus')
+
+      if [[ "$merge_state" == "DIRTY" ]]; then
+        log_error "GitHub reports PR has merge conflicts"
+        ralpr_result '{"status":"conflicts","message":"GitHub reports merge conflicts"}'
+        exit 1
+      fi
+
+      log_info "PR is mergeable (state: $merge_state)"
+      ralpr_result "{\"status\":\"verified\",\"merge_state\":\"$merge_state\"}"
+      exit 0
+      ;;
+
+    *)
+      log_error "Unknown action: $action"
+      exit 1
+      ;;
+  esac
+}
+
+# ============================================================================
+# SUBCOMMAND: release
+# ============================================================================
+cmd_release() {
+  local type=""
+  local number=""
+
+  if [[ $# -lt 2 ]]; then
+    log_error "Usage: ralpr release <issue|pr> <number>"
+    exit 1
+  fi
+
+  type="$1"
+  number="$2"
+
+  case "$type" in
+    issue)
+      log_info "Releasing assignment from issue #$number..."
+      gh issue edit "$number" --remove-assignee @me
+      gh issue edit "$number" --remove-label "status:in-progress" 2>/dev/null || true
+      gh issue edit "$number" --add-label "status:backlog" 2>/dev/null || true
+      log_info "Released issue #$number"
+      ralpr_result "{\"status\":\"released\",\"type\":\"issue\",\"number\":$number}"
+      ;;
+
+    pr)
+      log_info "Releasing assignment from PR #$number..."
+      gh pr edit "$number" --remove-assignee @me
+      log_info "Released PR #$number"
+      ralpr_result "{\"status\":\"released\",\"type\":\"pr\",\"number\":$number}"
+      ;;
+
+    *)
+      log_error "Unknown type: $type"
+      exit 1
+      ;;
+  esac
+
+  exit 0
+}
+
+# ============================================================================
+# PHASE COMMANDS (delegate to phase scripts)
+# ============================================================================
+cmd_implementation() {
+  exec "$SCRIPT_DIR/ralpr-implementation.sh" "$@"
+}
+
+cmd_review() {
+  exec "$SCRIPT_DIR/ralpr-review.sh" "$@"
+}
+
+cmd_refactor() {
+  exec "$SCRIPT_DIR/ralpr-refactor.sh" "$@"
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+show_help() {
+  cat << 'EOF'
+ralpr - Ralpr CLI v2.0 (Ralph Autonomous Loop for Pull-request Readiness)
+
+Three-phase architecture for autonomous ticket processing:
+  Phase 1: Implementation - Implement issues using TDD (no loops)
+  Phase 2: Review - AI code review with confidence scoring (single iteration)
+  Phase 3: Refactor - Code quality improvements (single iteration)
+
+Usage: ralpr <command> [options]
+
+Phase Commands:
+  implementation [--issue N] [--human-review]
+      Run Phase 1: Select issue, implement with TDD, create PR
+
+  review [--pr N]
+      Run Phase 2: Single review iteration with parallel reviewers
+
+  refactor [--pr N]
+      Run Phase 3: Single refactor iteration with refactor skill
+
+Utility Commands:
+  setup
+      Check prerequisites, detect default branch
+
+  select [--issue N] [--dry-run]
+      Select next ticket (PRs with comments/failing CI > bugs > features)
+
+  claim <issue|pr> <number>
+      Assign ticket to self
+
+  branch --issue N [--title SLUG]
+      Create feature branch in worktree
+
+  ci <wait|logs|status> [--branch B] [--timeout S]
+      CI operations
+
+  pr <check-conflicts|create|verify> [options]
+      PR operations
+
+  release <issue|pr> <number>
+      Remove assignment from ticket
+
+Full Pipeline:
+  ralpr --issue 123                    # Run all phases for issue
+  ralpr --pr 456                       # Start from PR (auto-detect phase)
+
+Examples:
+  ralpr implementation --issue 123     # Implement specific issue
+  ralpr review --pr 456                # Review specific PR
+  ralpr refactor                       # Auto-select PR ready for refactor
+  ralpr --dry-run                      # Preview selection
+EOF
+}
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    show_help
+    exit 1
+  fi
+
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    # Phase commands
+    implementation|impl) cmd_implementation "$@" ;;
+    review) cmd_review "$@" ;;
+    refactor) cmd_refactor "$@" ;;
+
+    # Utility commands
+    setup) cmd_setup "$@" ;;
+    select) cmd_select "$@" ;;
+    claim) cmd_claim "$@" ;;
+    branch) cmd_branch "$@" ;;
+    ci) cmd_ci "$@" ;;
+    pr) cmd_pr "$@" ;;
+    release) cmd_release "$@" ;;
+
+    # Help
+    help|--help|-h) show_help ;;
+
+    *)
+      log_error "Unknown command: $cmd"
+      show_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
