@@ -11,11 +11,17 @@ source "$_LIB_DIR/common.sh"
 # CI STATUS CHECKING
 # ============================================================================
 
-# Get latest workflow run for a branch
+# Get latest workflow run for a branch, optionally matching a specific commit SHA
 get_latest_run_id() {
   local branch="${1:-$(git branch --show-current)}"
+  local head_sha="${2:-}"
 
-  gh run list --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo ""
+  if [[ -n "$head_sha" ]]; then
+    gh run list --branch "$branch" --limit 5 --json databaseId,headSha \
+      --jq "[.[] | select(.headSha == \"$head_sha\")] | first | .databaseId // empty" 2>/dev/null || echo ""
+  else
+    gh run list --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo ""
+  fi
 }
 
 # Get run status
@@ -41,8 +47,10 @@ has_workflows() {
 wait_for_ci() {
   local branch="${1:-$(git branch --show-current)}"
   local timeout="${2:-600}"  # Default 10 minutes
+  local head_sha
+  head_sha=$(git rev-parse HEAD)
 
-  log_phase "Waiting for CI on branch: $branch"
+  log_phase "Waiting for CI on branch: $branch (commit ${head_sha:0:7})"
 
   # Check if workflows exist
   if ! has_workflows; then
@@ -50,29 +58,29 @@ wait_for_ci() {
     return 3
   fi
 
-  # Wait for runs to appear (may take a moment after push)
+  # Wait for a run matching HEAD to appear (may take a moment after push)
   local waited=0
   local initial_wait=60
   local run_id=""
 
   while [[ $waited -lt $initial_wait ]]; do
-    run_id=$(get_latest_run_id "$branch")
+    run_id=$(get_latest_run_id "$branch" "$head_sha")
 
     if [[ -n "$run_id" ]]; then
       break
     fi
 
-    log_info "Waiting for CI runs to appear... (${waited}s)"
+    log_info "Waiting for CI run for ${head_sha:0:7}... (${waited}s)"
     sleep 10
     waited=$((waited + 10))
   done
 
   if [[ -z "$run_id" ]]; then
-    log_warn "No CI runs appeared after ${initial_wait}s"
+    log_warn "No CI run for commit ${head_sha:0:7} appeared after ${initial_wait}s"
     return 3
   fi
 
-  log_info "Watching run #$run_id..."
+  log_info "Watching run #$run_id (commit ${head_sha:0:7})..."
 
   # Use gh run watch with timeout
   if timeout "$timeout" gh run watch "$run_id" --exit-status; then
@@ -96,8 +104,10 @@ wait_for_workflow() {
   local workflow_name="$1"
   local branch="${2:-$(git branch --show-current)}"
   local timeout="${3:-600}"
+  local head_sha
+  head_sha=$(git rev-parse HEAD)
 
-  log_phase "Waiting for workflow '$workflow_name' on branch: $branch"
+  log_phase "Waiting for workflow '$workflow_name' on branch: $branch (commit ${head_sha:0:7})"
 
   # Get workflow ID
   local workflow_id
@@ -108,29 +118,30 @@ wait_for_workflow() {
     return 1
   fi
 
-  # Wait for runs to appear
+  # Wait for a run matching HEAD to appear
   local waited=0
   local initial_wait=60
   local run_id=""
 
   while [[ $waited -lt $initial_wait ]]; do
-    run_id=$(gh run list --workflow "$workflow_id" --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
+    run_id=$(gh run list --workflow "$workflow_id" --branch "$branch" --limit 5 --json databaseId,headSha \
+      --jq "[.[] | select(.headSha == \"$head_sha\")] | first | .databaseId // empty" 2>/dev/null || echo "")
 
     if [[ -n "$run_id" ]]; then
       break
     fi
 
-    log_info "Waiting for workflow runs... (${waited}s)"
+    log_info "Waiting for workflow run for ${head_sha:0:7}... (${waited}s)"
     sleep 10
     waited=$((waited + 10))
   done
 
   if [[ -z "$run_id" ]]; then
-    log_warn "No runs appeared for workflow '$workflow_name'"
+    log_warn "No runs for commit ${head_sha:0:7} appeared for workflow '$workflow_name'"
     return 3
   fi
 
-  log_info "Watching run #$run_id..."
+  log_info "Watching run #$run_id (commit ${head_sha:0:7})..."
 
   if timeout "$timeout" gh run watch "$run_id" --exit-status; then
     log_info "✓ Workflow passed"
