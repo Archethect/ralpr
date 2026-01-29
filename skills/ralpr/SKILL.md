@@ -59,14 +59,14 @@ Select phase based on arguments. Issue/PR numbers are optional — scripts auto-
 
 ### State Management
 
-See @iteration-state.md for:
+See @../../docs/iteration-state.md for:
 - Reading/writing PR comment state
 - State markers: `RALPR_REVIEW_STATE`, `RALPR_REFACTOR_STATE`
 - Delete-then-create pattern
 
 ### Labels & Comments
 
-See @comment-formats.md for:
+See @../../docs/comment-formats.md for:
 - Label retention rules
 - Comment templates with icons
 - Setting confidence labels
