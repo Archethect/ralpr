@@ -37,9 +37,9 @@ Select phase based on arguments or PR state:
 
 | Condition | Phase | Documentation |
 |-----------|-------|---------------|
-| `--issue <N>` provided | Implementation | @phase-implementation.md |
-| `--pr <N>` with `ralpr:impl:done` | Review | @phase-review.md |
-| `--pr <N>` with `ralpr:review:90+` | Refactor | @phase-refactor.md |
+| `--issue <N> --phase impl` provided | Implementation | @phase-implementation.md |
+| `--pr <N> --phase review` provided | Review | @phase-review.md |
+| `--pr <N> --phase refactor` provided | Refactor | @phase-refactor.md |
 
 ### State Management
 
@@ -88,3 +88,4 @@ RALPR_SCRIPTS/ralpr ci <wait|logs|status>
 RALPR_SCRIPTS/ralpr pr <create|verify>
 RALPR_SCRIPTS/ralpr release <issue|pr> <number>
 ```
+ 
