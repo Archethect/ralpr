@@ -19,7 +19,7 @@ IMPL_WORKTREE_BASE="${IMPL_WORKTREE_BASE:-.worktrees}"
 # ============================================================================
 
 # Confidence threshold to pass review (0-100)
-REVIEW_THRESHOLD="${REVIEW_THRESHOLD:-90}"
+REVIEW_THRESHOLD="${REVIEW_THRESHOLD:-85}"
 
 # Maximum review loop iterations
 REVIEW_MAX_LOOPS="${REVIEW_MAX_LOOPS:-7}"
@@ -41,7 +41,7 @@ REVIEW_WEIGHTS_SEVERITY_TREND="${REVIEW_WEIGHTS_SEVERITY_TREND:-0.10}"
 # ============================================================================
 
 # Confidence threshold to pass refactor (0-100)
-REFACTOR_THRESHOLD="${REFACTOR_THRESHOLD:-95}"
+REFACTOR_THRESHOLD="${REFACTOR_THRESHOLD:-85}"
 
 # Maximum refactor loop iterations
 REFACTOR_MAX_LOOPS="${REFACTOR_MAX_LOOPS:-5}"

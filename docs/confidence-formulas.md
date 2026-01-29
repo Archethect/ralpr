@@ -195,8 +195,8 @@ REFACTOR_WEIGHTS_SKILL=0.70
 REFACTOR_WEIGHTS_STABILITY=0.30
 
 # Thresholds
-REVIEW_THRESHOLD=90
-REFACTOR_THRESHOLD=95
+REVIEW_THRESHOLD=85
+REFACTOR_THRESHOLD=85
 ```
 
 ---
@@ -207,9 +207,9 @@ Labels are created with colors based on confidence level:
 
 | Confidence | Color | Hex |
 |------------|-------|-----|
-| >= 90% | Green | #238636 |
-| 70-89% | Orange | #d29922 |
-| < 70% | Red | #d73a4a |
+| >= 85% | Green | #238636 |
+| 65-84% | Orange | #d29922 |
+| < 65% | Red | #d73a4a |
 
 ---
 

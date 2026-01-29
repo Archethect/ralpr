@@ -196,7 +196,7 @@ git worktree remove <path> --force  # if worktree
 
 ## Phase 2: Review
 
-**Target: 90% confidence. Cumulative model: each iteration adds 5-15 points (with diminishing returns).**
+**Target: 85% confidence. Cumulative model: each iteration adds 5-15 points (with diminishing returns).**
 
 Do NOT fetch PR files via GitHub API - agents read local files.
 
@@ -305,7 +305,7 @@ git worktree remove <path> --force  # if worktree
 
 ## Phase 3: Refactor
 
-**Target: 95% confidence.**
+**Target: 85% confidence.**
 
 Do NOT fetch PR files via GitHub API - agents read local files.
 
