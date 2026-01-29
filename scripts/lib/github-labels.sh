@@ -92,15 +92,18 @@ remove_phase_confidence_labels() {
 }
 
 # ============================================================================
-# ITERATION TRACKING
+# ITERATION TRACKING (Consolidated functions)
 # ============================================================================
 
-# Get current review iteration from label (returns 0 if no iteration label)
-get_review_iteration() {
+# Get current iteration from label (returns 0 if no iteration label)
+# Usage: get_iteration "$pr_number" "$phase"
+# phase: "review" or "refactor"
+get_iteration() {
   local pr_number="$1"
+  local phase="${2:-review}"
 
   local label
-  label=$(gh pr view "$pr_number" --json labels --jq '.labels[].name' 2>/dev/null | grep "^ralpr:review:iter:" | head -1 || echo "")
+  label=$(gh pr view "$pr_number" --json labels --jq '.labels[].name' 2>/dev/null | grep "^ralpr:${phase}:iter:" | head -1 || echo "")
 
   if [ -n "$label" ]; then
     echo "$label" | sed 's/.*:iter://'
@@ -109,18 +112,21 @@ get_review_iteration() {
   fi
 }
 
-# Set review iteration label (increments current iteration)
-increment_review_iteration() {
+# Increment iteration label for a phase
+# Usage: increment_iteration "$pr_number" "$phase"
+# phase: "review" or "refactor"
+increment_iteration() {
   local pr_number="$1"
+  local phase="${2:-review}"
 
   local current_iter
-  current_iter=$(get_review_iteration "$pr_number")
+  current_iter=$(get_iteration "$pr_number" "$phase")
   local new_iter=$((current_iter + 1))
 
-  local old_label="ralpr:review:iter:$current_iter"
-  local new_label="ralpr:review:iter:$new_iter"
+  local old_label="ralpr:${phase}:iter:$current_iter"
+  local new_label="ralpr:${phase}:iter:$new_iter"
 
-  log_info "Review iteration: $current_iter -> $new_iter"
+  log_info "${phase^} iteration: $current_iter -> $new_iter"
 
   # Remove old iteration label if exists
   if [ "$current_iter" -gt 0 ]; then
@@ -128,50 +134,17 @@ increment_review_iteration() {
   fi
 
   # Create and add new iteration label
-  ensure_label "$new_label" "6e7681" "Ralpr review iteration $new_iter"
+  ensure_label "$new_label" "6e7681" "Ralpr ${phase} iteration $new_iter"
   gh pr edit "$pr_number" --add-label "$new_label" 2>/dev/null || true
 
   echo "$new_iter"
 }
 
-# Get current refactor iteration from label (returns 0 if no iteration label)
-get_refactor_iteration() {
-  local pr_number="$1"
-
-  local label
-  label=$(gh pr view "$pr_number" --json labels --jq '.labels[].name' 2>/dev/null | grep "^ralpr:refactor:iter:" | head -1 || echo "")
-
-  if [ -n "$label" ]; then
-    echo "$label" | sed 's/.*:iter://'
-  else
-    echo "0"
-  fi
-}
-
-# Set refactor iteration label (increments current iteration)
-increment_refactor_iteration() {
-  local pr_number="$1"
-
-  local current_iter
-  current_iter=$(get_refactor_iteration "$pr_number")
-  local new_iter=$((current_iter + 1))
-
-  local old_label="ralpr:refactor:iter:$current_iter"
-  local new_label="ralpr:refactor:iter:$new_iter"
-
-  log_info "Refactor iteration: $current_iter -> $new_iter"
-
-  # Remove old iteration label if exists
-  if [ "$current_iter" -gt 0 ]; then
-    gh pr edit "$pr_number" --remove-label "$old_label" 2>/dev/null || true
-  fi
-
-  # Create and add new iteration label
-  ensure_label "$new_label" "6e7681" "Ralpr refactor iteration $new_iter"
-  gh pr edit "$pr_number" --add-label "$new_label" 2>/dev/null || true
-
-  echo "$new_iter"
-}
+# Legacy wrappers for backward compatibility
+get_review_iteration() { get_iteration "$1" "review"; }
+get_refactor_iteration() { get_iteration "$1" "refactor"; }
+increment_review_iteration() { increment_iteration "$1" "review"; }
+increment_refactor_iteration() { increment_iteration "$1" "refactor"; }
 
 # Set phase label on PR (removes other Ralpr labels first)
 set_phase_label() {

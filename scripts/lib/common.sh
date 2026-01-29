@@ -232,3 +232,32 @@ retry() {
   log_error "Command failed after $max_attempts attempts"
   return 1
 }
+
+# Load a prompt template and substitute variables
+# Usage: load_prompt "review-iteration-prompt" ITERATION=1 PR_NUMBER=123 ...
+# Template files use {{VAR}} placeholders
+load_prompt() {
+  local template_name="$1"
+  shift
+
+  local script_dir
+  script_dir=$(get_script_dir)
+  local template_file="${script_dir%/lib}/templates/${template_name}.md"
+
+  if [[ ! -f "$template_file" ]]; then
+    log_error "Template not found: $template_file"
+    return 1
+  fi
+
+  local content
+  content=$(cat "$template_file")
+
+  # Substitute each VAR=value argument
+  for arg in "$@"; do
+    local var="${arg%%=*}"
+    local value="${arg#*=}"
+    content="${content//\{\{$var\}\}/$value}"
+  done
+
+  echo "$content"
+}

@@ -51,94 +51,18 @@ run_review_iteration() {
   owner_repo=$(get_owner_repo)
   local base_branch
   base_branch=$(get_default_branch)
+  local current_branch
+  current_branch=$(git branch --show-current)
 
-  # Build the prompt for this iteration
+  # Load prompt from template
   local prompt
-  prompt=$(cat << EOF
-Ralpr Review Phase - Iteration $iteration for PR #$pr_number
-
-You are running Ralpr Review Phase iteration $iteration.
-
-## Context
-- PR: $pr_number
-- Repository: $owner_repo
-- Base branch: $base_branch
-- Working directory: $working_dir
-- This is a FRESH session - previous context is not available
-
-## Your Tasks
-
-1. **Understand the PR** - Spawn understand-agent:
-   \`\`\`
-   Task(
-     subagent_type="ralpr:understand-agent",
-     prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"mode": "pr", "pr_number": $pr_number, "repo": "$owner_repo", "map_path": "docs/.codebase-map.json"}',
-     description="Analyze PR changes"
-   )
-   \`\`\`
-
-2. **Run 3 reviewers IN PARALLEL**:
-   \`\`\`
-   Task(subagent_type="ralpr:qa-reviewer", prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"pr_number": $pr_number, "branch": "$(git branch --show-current)", "base_branch": "$base_branch", "working_dir": "$working_dir", "map_path": "docs/.codebase-map.json"}', description="QA review")
-   Task(subagent_type="ralpr:domain-expert", prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"pr_number": $pr_number, "branch": "$(git branch --show-current)", "base_branch": "$base_branch", "working_dir": "$working_dir", "map_path": "docs/.codebase-map.json"}', description="Domain review")
-   Task(subagent_type="ralpr:codex-reviewer", prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"pr_number": $pr_number, "branch": "$(git branch --show-current)", "base_branch": "$base_branch", "working_dir": "$working_dir"}', description="Codex review")
-   \`\`\`
-
-3. **Aggregate issues** - Dedupe by file:line, prioritize by severity
-
-4. **Apply fixes** - For high-confidence suggestions (>0.8), apply the fix
-
-5. **Run quality gates**:
-   - npm test
-   - npm run lint
-   - npm run typecheck (if TypeScript)
-
-6. **Commit and push** if any fixes applied:
-   \`\`\`bash
-   git add -A
-   git commit -m "fix: address review feedback - iteration $iteration
-
-   Co-Authored-By: Claude <noreply@anthropic.com>"
-   git push
-   \`\`\`
-
-7. **Calculate confidence** using the formula:
-   \`\`\`
-   confidence = (convergence × 0.30) + (resolution × 0.25) + (consensus × 0.20) + (test_quality × 0.15) + (severity_trend × 0.10)
-   \`\`\`
-   Note: First iteration caps at ~57% to ensure convergence proof.
-
-8. **Set PR label** with confidence score:
-   \`\`\`bash
-   gh pr edit $pr_number --add-label "ralpr:review:\$CONFIDENCE"
-   \`\`\`
-
-## Output Format
-
-After completing all tasks, output EXACTLY this JSON (no other text):
-
-\`\`\`json
-{
-  "iteration": $iteration,
-  "reviewers": {
-    "qa": <qa_reviewer_output>,
-    "domain": <domain_expert_output>,
-    "codex": <codex_reviewer_output>
-  },
-  "issues_found": <total_count>,
-  "issues_fixed": <fixed_count>,
-  "quality_gates": {
-    "tests": "passed|failed|skipped",
-    "lint": "passed|failed|skipped",
-    "typecheck": "passed|failed|skipped"
-  },
-  "commits": [<list of commit SHAs if any>],
-  "confidence": <calculated_confidence_0_100>,
-  "label_set": "ralpr:review:<confidence>"
-}
-\`\`\`
-EOF
-)
+  prompt=$(load_prompt "review-iteration-prompt" \
+    "ITERATION=$iteration" \
+    "PR_NUMBER=$pr_number" \
+    "OWNER_REPO=$owner_repo" \
+    "BASE_BRANCH=$base_branch" \
+    "WORKING_DIR=$working_dir" \
+    "BRANCH=$current_branch")
 
   # Run Claude with the prompt
   local result
@@ -169,83 +93,14 @@ run_refactor_iteration() {
   local base_branch
   base_branch=$(get_default_branch)
 
-  # Build the prompt for this iteration
+  # Load prompt from template
   local prompt
-  prompt=$(cat << EOF
-Ralpr Refactor Phase - Iteration $iteration for PR #$pr_number
-
-You are running Ralpr Refactor Phase iteration $iteration.
-
-## Context
-- PR: $pr_number
-- Repository: $owner_repo
-- Base branch: $base_branch
-- Working directory: $working_dir
-- This is a FRESH session - previous context is not available
-
-## Your Tasks
-
-1. **Understand the PR** - Spawn understand-agent:
-   \`\`\`
-   Task(
-     subagent_type="ralpr:understand-agent",
-     prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"mode": "pr", "pr_number": $pr_number, "repo": "$owner_repo", "map_path": "docs/.codebase-map.json"}',
-     description="Analyze PR for refactoring"
-   )
-   \`\`\`
-
-2. **Invoke the refactor skill**:
-   \`\`\`
-   Skill(skill="superpowers:refactor")
-   \`\`\`
-
-3. **Get skill confidence** - The refactor skill should report its confidence level (0-100)
-
-4. **Run quality gates**:
-   - npm test
-   - npm run lint
-   - npm run typecheck (if TypeScript)
-
-5. **Commit and push** if any refactoring applied:
-   \`\`\`bash
-   git add -A
-   git commit -m "refactor: improve code quality - iteration $iteration
-
-   Co-Authored-By: Claude <noreply@anthropic.com>"
-   git push
-   \`\`\`
-
-6. **Calculate confidence** using the formula:
-   \`\`\`
-   confidence = (skill_confidence × 0.70) + (test_stability × 0.30)
-   \`\`\`
-
-7. **Set PR label** with confidence score:
-   \`\`\`bash
-   gh pr edit $pr_number --add-label "ralpr:refactor:\$CONFIDENCE"
-   \`\`\`
-
-## Output Format
-
-After completing all tasks, output EXACTLY this JSON (no other text):
-
-\`\`\`json
-{
-  "iteration": $iteration,
-  "skill_confidence": <0-100>,
-  "refactorings_applied": <count>,
-  "quality_gates": {
-    "tests": "passed|failed|skipped",
-    "lint": "passed|failed|skipped",
-    "typecheck": "passed|failed|skipped"
-  },
-  "commits": [<list of commit SHAs if any>],
-  "confidence": <calculated_confidence_0_100>,
-  "label_set": "ralpr:refactor:<confidence>"
-}
-\`\`\`
-EOF
-)
+  prompt=$(load_prompt "refactor-iteration-prompt" \
+    "ITERATION=$iteration" \
+    "PR_NUMBER=$pr_number" \
+    "OWNER_REPO=$owner_repo" \
+    "BASE_BRANCH=$base_branch" \
+    "WORKING_DIR=$working_dir")
 
   # Run Claude with the prompt
   local result
