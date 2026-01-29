@@ -240,9 +240,10 @@ load_prompt() {
   local template_name="$1"
   shift
 
-  local script_dir
-  script_dir=$(get_script_dir)
-  local template_file="${script_dir%/lib}/templates/${template_name}.md"
+  # Get the lib directory (where this file is located)
+  local lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local template_file="${lib_dir}/../templates/${template_name}.md"
 
   if [[ ! -f "$template_file" ]]; then
     log_error "Template not found: $template_file"
