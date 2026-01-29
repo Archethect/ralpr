@@ -1,5 +1,11 @@
 # Iteration State Management
 
+## Canonical State Source
+
+PR comments (hidden HTML markers) are the **authoritative** state source. Local `.ralpr/pr-N/` files are script-level caches and may be stale. If there is a conflict between a PR comment state and a local file, the PR comment wins.
+
+## State Markers
+
 State persists as hidden PR comments with **phase-specific markers**:
 
 - Review: `<!-- RALPR_REVIEW_STATE {...} -->`

@@ -8,29 +8,31 @@ Do NOT fetch PR files via GitHub API - agents read local files.
 
 1. **Setup**: `RALPR_SCRIPTS/ralpr setup` → get `default_branch`, `worktree_base`
 
-2. **Claim PR**: `RALPR_SCRIPTS/ralpr claim pr <N>`
+2. **Select**: `RALPR_SCRIPTS/ralpr select --phase review` (or use provided `--pr N`)
 
-3. **Setup Worktree**: `RALPR_SCRIPTS/ralpr review --pr <N>`
+3. **Claim PR**: `RALPR_SCRIPTS/ralpr claim pr <N>`
+
+4. **Setup Worktree**: `RALPR_SCRIPTS/ralpr review --pr <N>`
    → returns `{"status":"ready","phase":"review","pr_number":N,"branch":"...","worktree_path":"...","working_dir":"..."}`
    → **cd to `working_dir` before continuing**
 
-4. **Explore** (in worktree):
+5. **Explore** (in worktree):
    ```
    Task(subagent_type="ralpr:explore-agent",
         prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"mode": "full", "working_dir": "<working_dir>"}')
    ```
    → store `map_path`
 
-5. **Read State** → store as `state` (see @iteration-state.md)
+6. **Read State** → store as `state` (see @iteration-state.md)
 
-6. **Understand** (blocking):
+7. **Understand** (blocking):
    ```
    Task(subagent_type="ralpr:understand-agent",
         prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"mode": "pr", "pr_number": <N>, "repo": "<owner>/<repo>", "map_path": "<path>"}')
    ```
    → store as `understand_output`
 
-7. **Review** (3 agents IN PARALLEL):
+8. **Review** (3 agents IN PARALLEL):
    ```
    Task(subagent_type="ralpr:qa-reviewer",
         prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"pr_number": <N>, "branch": "...", "base_branch": "...", "working_dir": "...", "map_path": "...", "context": <understand_output>, "focus_areas": <understand_output.focus_areas.qa>}')
@@ -43,17 +45,24 @@ Do NOT fetch PR files via GitHub API - agents read local files.
    ```
    - QA/Domain read LOCAL files; Codex uses `gh pr diff`
 
-8. **Aggregate**: Dedupe by file:line → `issues_this_iteration`, `current_severity = {high: N, medium: N, low: N}`
+9. **Aggregate**: Dedupe by file:line → `issues_this_iteration`, `current_severity = {high: N, medium: N, low: N}`
 
-9. **Analyze**: Decide yes/no on each suggestion
+10. **Discuss**: Have a discussion with ALL reviewers (including yourself) and ask if the issue needs to be fixed.
 
-10. **Fix**: Implement fixes → track `issues_fixed_this_iteration`
+11. **Decide**: Apply fix thresholds per severity:
+    - **CRITICAL/HIGH**: Fix if >= 2 reviewers agree
+    - **MEDIUM**: Fix if >= 3 reviewers agree
+    - **LOW**: Fix at your discretion
 
-11. **Quality Gates**: Run tests, lint, and typecheck (use project's package manager)
+    If a required fix seems impossible (e.g., missing test infrastructure, out-of-scope dependency), **STOP and ask the user**. Do NOT skip or rationalize. If the user approves skipping, document the skip reason in the review comment.
 
-12. **Push + CI**: Commit, push, `RALPR_SCRIPTS/ralpr ci wait`
+12. **Fix**: Implement fixes → track `issues_fixed_this_iteration`
 
-13. **Calculate Confidence** (Cumulative Additive Model):
+13. **Quality Gates**: Run tests, lint, and typecheck (use project's package manager)
+
+14. **Push + CI**: Commit, push, `RALPR_SCRIPTS/ralpr ci wait`
+
+15. **Calculate Confidence** (Cumulative Additive Model):
     ```python
     # Each iteration earns 5-15 points based on quality
     iteration_points = 5  # base: completed iteration
@@ -80,9 +89,9 @@ Do NOT fetch PR files via GitHub API - agents read local files.
     confidence = min(100, int(40 + new_cumulative))
     ```
 
-14. **Set Label**: See @comment-formats.md
+16. **Set Label**: See @comment-formats.md
 
-15. **Write State**:
+17. **Write State**:
     ```python
     new_state = {
         "phase": "review",
@@ -92,7 +101,7 @@ Do NOT fetch PR files via GitHub API - agents read local files.
     }
     ```
 
-16. **Write Comment**: See @comment-formats.md
+18. **Write Comment**: See @comment-formats.md
 
 ## Output
 ```json

@@ -11,7 +11,7 @@ SKILL_FILE="$PLUGIN_DIR/skills/ralpr/SKILL.md"
 # Read the skill file and output as RALPR_SKILL tag
 if [[ -f "$SKILL_FILE" ]]; then
   echo "<RALPR_SKILL>"
-  echo "You have access to the Ralpr plugin v2.0."
+  echo "You have access to the Ralpr plugin v2.1."
   echo ""
   echo "**Plugin location:** $PLUGIN_DIR"
   echo ""

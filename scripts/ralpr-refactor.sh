@@ -32,25 +32,48 @@ WORKTREE_PATH=""
 # ============================================================================
 
 # Select PR ready for refactor phase
+# Filters: review confidence >= REVIEW_THRESHOLD, refactor confidence < REFACTOR_THRESHOLD (or none), unassigned
 select_refactor_pr() {
   log_info "Auto-selecting PR for refactor..."
 
-  # Find PRs with ralpr:review:XX labels where XX >= 90
-  local prs
-  prs=$(gh pr list --state open --json number,labels --jq '
-    .[] |
-    select(.labels | map(.name) | any(test("^ralpr:review:[0-9]+$"))) |
-    select(.labels | map(.name) | map(select(test("^ralpr:review:[0-9]+$"))) | .[0] | split(":")[2] | tonumber >= 90) |
-    .number
-  ' 2>/dev/null || echo "")
+  # Find open PRs with review label, unassigned, where review >= threshold and refactor < threshold
+  local selected=""
+  while IFS= read -r pr_json; do
+    [[ -z "$pr_json" ]] && continue
+    local pr_num review_conf refactor_conf
+    pr_num=$(echo "$pr_json" | jq -r '.number')
 
-  if [[ -z "$prs" ]]; then
-    log_info "No PRs ready for refactor (need ralpr:review:90+ label)"
+    # Extract review confidence
+    review_conf=$(echo "$pr_json" | jq -r '
+      [.labels[].name | select(test("^ralpr:review:[0-9]+$"))] |
+      if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
+    ')
+
+    # Skip if review not done
+    if [[ "$review_conf" -lt "$REVIEW_THRESHOLD" ]]; then
+      continue
+    fi
+
+    # Extract refactor confidence (0 if no refactor label)
+    refactor_conf=$(echo "$pr_json" | jq -r '
+      [.labels[].name | select(test("^ralpr:refactor:[0-9]+$"))] |
+      if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
+    ')
+
+    if [[ "$refactor_conf" -lt "$REFACTOR_THRESHOLD" ]]; then
+      selected="$pr_num"
+      break
+    fi
+  done < <(gh pr list --state open \
+    --json number,title,labels,assignees,createdAt \
+    --jq '[.[] | select(.assignees | length == 0) | select(.labels | map(.name) | any(test("^ralpr:review:[0-9]+$")))] | sort_by(.createdAt) | .[]' 2>/dev/null)
+
+  if [[ -z "$selected" ]]; then
+    log_info "No PRs ready for refactor (need ralpr:review:${REVIEW_THRESHOLD}+ label, refactor < ${REFACTOR_THRESHOLD})"
     return 1
   fi
 
-  # Return first (oldest) PR
-  PR_NUMBER=$(echo "$prs" | head -1)
+  PR_NUMBER="$selected"
   log_info "Selected PR #$PR_NUMBER for refactor"
   return 0
 }
@@ -136,9 +159,6 @@ run_refactor_phase() {
   if [[ -f "$WORKTREE_PATH/package.json" ]]; then
     (cd "$WORKTREE_PATH" && npm install)
   fi
-
-  # Set in-progress label
-  gh pr edit "$PR_NUMBER" --add-label "ralpr:refactor" 2>/dev/null || true
 
   # Track iteration (increment from current)
   local iteration

@@ -21,6 +21,14 @@ gh pr view <N> --json labels --jq '.labels[].name' | grep "^ralpr:refactor:[0-9]
 gh pr edit <N> --add-label "ralpr:refactor:<confidence>"
 ```
 
+## Iteration Labels (Script-Managed)
+
+Scripts automatically create iteration-tracking labels:
+- `ralpr:review:iter:N` — set by `ralpr-review.sh` after each review iteration
+- `ralpr:refactor:iter:N` — set by `ralpr-refactor.sh` after each refactor iteration
+
+These are **read-only for agents**. Do not manually create, modify, or remove them. They are operational labels managed by scripts, separate from the confidence labels above.
+
 ## Comment Templates
 
 **Review:**

@@ -32,20 +32,37 @@ WORKTREE_PATH=""
 # ============================================================================
 
 # Select PR ready for review phase
+# Filters: has ralpr:impl:done, review confidence < REVIEW_THRESHOLD (or none), unassigned
 select_review_pr() {
   log_info "Auto-selecting PR for review..."
 
-  # Find PRs with ralpr:impl:done label
-  local prs
-  prs=$(gh pr list --state open --label "ralpr:impl:done" --json number,title --jq '.[].number' 2>/dev/null || echo "")
+  # Find PRs with ralpr:impl:done label, unassigned, where review confidence < threshold
+  local selected=""
+  while IFS= read -r pr_json; do
+    [[ -z "$pr_json" ]] && continue
+    local pr_num review_conf
+    pr_num=$(echo "$pr_json" | jq -r '.number')
 
-  if [[ -z "$prs" ]]; then
-    log_info "No PRs with ralpr:impl:done label found"
+    # Extract review confidence from labels (0 if no review label)
+    review_conf=$(echo "$pr_json" | jq -r '
+      [.labels[].name | select(test("^ralpr:review:[0-9]+$"))] |
+      if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
+    ')
+
+    if [[ "$review_conf" -lt "$REVIEW_THRESHOLD" ]]; then
+      selected="$pr_num"
+      break
+    fi
+  done < <(gh pr list --state open --label "ralpr:impl:done" \
+    --json number,title,labels,assignees,createdAt \
+    --jq '[.[] | select(.assignees | length == 0)] | sort_by(.createdAt) | .[]' 2>/dev/null)
+
+  if [[ -z "$selected" ]]; then
+    log_info "No PRs with ralpr:impl:done label needing review found"
     return 1
   fi
 
-  # Return first (oldest) PR
-  PR_NUMBER=$(echo "$prs" | head -1)
+  PR_NUMBER="$selected"
   log_info "Selected PR #$PR_NUMBER for review"
   return 0
 }
@@ -119,9 +136,6 @@ run_review_phase() {
     (cd "$WORKTREE_PATH" && npm install)
   fi
 
-  # Set in-progress label
-  gh pr edit "$PR_NUMBER" --add-label "ralpr:review" 2>/dev/null || true
-
   # Track iteration (increment from current)
   local iteration
   iteration=$(increment_review_iteration "$PR_NUMBER")
@@ -183,9 +197,10 @@ Cleanup (REQUIRED):
   When done, always remove the worktree:
     git worktree remove .worktrees/review-pr-<N> --force
 
-Confidence Formula:
-  confidence = (convergence × 0.30) + (resolution × 0.25) +
-               (consensus × 0.20) + (test_quality × 0.15) + (severity_trend × 0.10)
+Confidence Formula (Cumulative Additive Model):
+  Each iteration earns 5-15 points (base 5 + tests 4 + severity 3 + consensus 3).
+  Diminishing returns: multiplier = max(0.5, 1.0 - iteration * 0.1).
+  confidence = min(100, 40 + cumulative_points)
 
 Labels:
   - During: ralpr:review

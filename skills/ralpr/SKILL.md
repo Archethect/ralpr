@@ -8,6 +8,22 @@ args: "[--issue <number>] [--pr <number>] [--phase <impl|review|refactor>] [--hu
 
 Three-phase architecture: **Implementation → Review → Refactor**
 
+## Mandatory Protocol
+
+You MUST follow these steps **sequentially** — no parallel execution, no skipping.
+
+**Step 1 — Read phase docs FIRST.** Before running ANY script or spawning ANY agent, read ALL `@`-referenced documentation for your phase. This is BLOCKING — do not proceed until you have read every referenced doc.
+
+**Step 2 — Pass arguments to scripts.** All `--issue` and `--pr` arguments are optional. If the user provided a specific number, pass it. Otherwise, the scripts will auto-select.
+
+**Step 3 — Execute phase workflow.** Follow the phase documentation step-by-step.
+
+## Authority Rules
+
+1. **Docs over scripts.** Documentation (`SKILL.md`, `phase-*.md`, `comment-formats.md`, `iteration-state.md`) is authoritative. If script behavior or output contradicts docs, follow docs and flag the discrepancy to the user.
+2. **Critical issues must be fixed or escalated.** CRITICAL/HIGH issues: fix if >= 2 reviewers agree. MEDIUM issues: fix if >= 3 reviewers agree. If a fix seems impossible (e.g., missing infrastructure, out-of-scope dependency), STOP and ask the user — never rationalize skipping.
+3. **Use only documented labels.** Only set labels documented in @../../docs/comment-formats.md for confidence/phase tracking. Scripts may create auxiliary labels (e.g., iteration tracking) — these are operational and read-only for agents. Do not manually create or remove them.
+
 ## Agent Registry
 
 | Agent | subagent_type | Purpose |
@@ -33,13 +49,13 @@ Output contract: Parse `RALPR_RESULT: {...json...}` from stdout last line.
 
 ## Phase Selection
 
-Select phase based on arguments or PR state:
+Select phase based on arguments. Issue/PR numbers are optional — scripts auto-select if omitted.
 
 | Condition | Phase | Documentation |
 |-----------|-------|---------------|
-| `--issue <N> --phase impl` provided | Implementation | @phase-implementation.md |
-| `--pr <N> --phase review` provided | Review | @phase-review.md |
-| `--pr <N> --phase refactor` provided | Refactor | @phase-refactor.md |
+| `[--issue <N>] --phase impl` provided | Implementation | @../../docs/phase-implementation.md |
+| `--pr <N> --phase review` provided | Review | @../../docs/phase-review.md |
+| `--pr <N> --phase refactor` provided | Refactor | @../../docs/phase-refactor.md |
 
 ### State Management
 

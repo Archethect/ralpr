@@ -24,6 +24,9 @@ QUERIES_DIR="$SCRIPT_DIR/queries"
 # Source common functions
 source "$SCRIPT_DIR/lib/common.sh"
 
+# Source config (needed by cmd_select --phase for thresholds)
+source "$SCRIPT_DIR/../config/ralpr.config.sh"
+
 # ============================================================================
 # HELPER: Check if issue has a "done" PR (passing CI, no unresolved comments)
 # ============================================================================
@@ -123,14 +126,121 @@ cmd_setup() {
 cmd_select() {
   local issue_num=""
   local dry_run=false
+  local phase=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --issue) issue_num="$2"; shift 2 ;;
+      --phase) phase="$2"; shift 2 ;;
       --dry-run) dry_run=true; shift ;;
       *) log_error "Unknown option: $1"; return 1 ;;
     esac
   done
+
+  # Phase-specific PR selection (review or refactor)
+  if [[ -n "$phase" ]]; then
+    case "$phase" in
+      review)
+        log_info "Selecting PR for review phase..."
+        local selected_pr=""
+        local selected_title=""
+
+        # Find open PRs with ralpr:impl:done, unassigned, where review confidence < REVIEW_THRESHOLD (or no review label)
+        while IFS= read -r pr_json; do
+          [[ -z "$pr_json" ]] && continue
+          local pr_num pr_title review_conf
+          pr_num=$(echo "$pr_json" | jq -r '.number')
+          pr_title=$(echo "$pr_json" | jq -r '.title')
+
+          # Extract review confidence from labels (0 if no review label)
+          review_conf=$(echo "$pr_json" | jq -r '
+            [.labels[].name | select(test("^ralpr:review:[0-9]+$"))] |
+            if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
+          ')
+
+          if [[ "$review_conf" -lt "$REVIEW_THRESHOLD" ]]; then
+            selected_pr="$pr_num"
+            selected_title="$pr_title"
+            break
+          fi
+        done < <(gh pr list --state open --label "ralpr:impl:done" \
+          --json number,title,labels,assignees,createdAt \
+          --jq '[.[] | select(.assignees | length == 0)] | sort_by(.createdAt) | .[]' 2>/dev/null)
+
+        if [[ -z "$selected_pr" ]]; then
+          log_info "No PRs available for review"
+          ralpr_result '{"status":"none","message":"No PRs ready for review"}'
+          exit 1
+        fi
+
+        log_info "Selected PR #$selected_pr for review: $selected_title"
+        if [[ "$dry_run" == "true" ]]; then
+          ralpr_result "{\"status\":\"dry_run\",\"type\":\"pr\",\"number\":$selected_pr,\"title\":$(echo "$selected_title" | jq -R .),\"reason\":\"review_needed\"}"
+        else
+          ralpr_result "{\"status\":\"selected\",\"type\":\"pr\",\"number\":$selected_pr,\"title\":$(echo "$selected_title" | jq -R .),\"reason\":\"review_needed\"}"
+        fi
+        exit 0
+        ;;
+
+      refactor)
+        log_info "Selecting PR for refactor phase..."
+        local selected_pr=""
+        local selected_title=""
+
+        # Find open PRs with review confidence >= REVIEW_THRESHOLD, unassigned, where refactor confidence < REFACTOR_THRESHOLD (or no refactor label)
+        while IFS= read -r pr_json; do
+          [[ -z "$pr_json" ]] && continue
+          local pr_num pr_title review_conf refactor_conf
+          pr_num=$(echo "$pr_json" | jq -r '.number')
+          pr_title=$(echo "$pr_json" | jq -r '.title')
+
+          # Extract review confidence
+          review_conf=$(echo "$pr_json" | jq -r '
+            [.labels[].name | select(test("^ralpr:review:[0-9]+$"))] |
+            if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
+          ')
+
+          # Skip if review not done
+          if [[ "$review_conf" -lt "$REVIEW_THRESHOLD" ]]; then
+            continue
+          fi
+
+          # Extract refactor confidence (0 if no refactor label)
+          refactor_conf=$(echo "$pr_json" | jq -r '
+            [.labels[].name | select(test("^ralpr:refactor:[0-9]+$"))] |
+            if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
+          ')
+
+          if [[ "$refactor_conf" -lt "$REFACTOR_THRESHOLD" ]]; then
+            selected_pr="$pr_num"
+            selected_title="$pr_title"
+            break
+          fi
+        done < <(gh pr list --state open \
+          --json number,title,labels,assignees,createdAt \
+          --jq '[.[] | select(.assignees | length == 0) | select(.labels | map(.name) | any(test("^ralpr:review:[0-9]+$")))] | sort_by(.createdAt) | .[]' 2>/dev/null)
+
+        if [[ -z "$selected_pr" ]]; then
+          log_info "No PRs available for refactor"
+          ralpr_result '{"status":"none","message":"No PRs ready for refactor"}'
+          exit 1
+        fi
+
+        log_info "Selected PR #$selected_pr for refactor: $selected_title"
+        if [[ "$dry_run" == "true" ]]; then
+          ralpr_result "{\"status\":\"dry_run\",\"type\":\"pr\",\"number\":$selected_pr,\"title\":$(echo "$selected_title" | jq -R .),\"reason\":\"refactor_needed\"}"
+        else
+          ralpr_result "{\"status\":\"selected\",\"type\":\"pr\",\"number\":$selected_pr,\"title\":$(echo "$selected_title" | jq -R .),\"reason\":\"refactor_needed\"}"
+        fi
+        exit 0
+        ;;
+
+      *)
+        log_error "Unknown phase: $phase (expected 'review' or 'refactor')"
+        exit 1
+        ;;
+    esac
+  fi
 
   if [[ -n "$issue_num" ]]; then
     local title
@@ -692,8 +802,9 @@ Utility Commands:
   setup
       Check prerequisites, detect default branch
 
-  select [--issue N] [--dry-run]
+  select [--issue N] [--phase review|refactor] [--dry-run]
       Select next ticket (PRs with comments/failing CI > bugs > features)
+      With --phase: select PR ready for review or refactor phase
 
   claim <issue|pr> <number>
       Assign ticket to self
