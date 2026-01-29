@@ -68,24 +68,3 @@ See @comment-formats.md for:
 | Agent output invalid | Retry once, then STOP |
 
 **Rule:** Never leave assigned and inactive. Either fix or release.
-
----
-
-## CLI Reference
-
-```bash
-# Phases
-RALPR_SCRIPTS/ralpr implementation --issue 123
-RALPR_SCRIPTS/ralpr review --pr 456
-RALPR_SCRIPTS/ralpr refactor --pr 456
-
-# Utilities
-RALPR_SCRIPTS/ralpr setup
-RALPR_SCRIPTS/ralpr select [--issue N]
-RALPR_SCRIPTS/ralpr claim <issue|pr> <number>
-RALPR_SCRIPTS/ralpr branch --issue N
-RALPR_SCRIPTS/ralpr ci <wait|logs|status>
-RALPR_SCRIPTS/ralpr pr <create|verify>
-RALPR_SCRIPTS/ralpr release <issue|pr> <number>
-```
- 
