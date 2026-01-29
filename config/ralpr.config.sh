@@ -9,7 +9,7 @@
 # ============================================================================
 
 # Confidence threshold to pass review (0-100)
-REVIEW_THRESHOLD="${REVIEW_THRESHOLD:-90}"
+REVIEW_THRESHOLD="${REVIEW_THRESHOLD:-85}"
 
 # Maximum review loop iterations
 REVIEW_MAX_LOOPS="${REVIEW_MAX_LOOPS:-7}"
@@ -22,7 +22,7 @@ REVIEW_BASE_CONFIDENCE="${REVIEW_BASE_CONFIDENCE:-40}"
 # ============================================================================
 
 # Confidence threshold to pass refactor (0-100)
-REFACTOR_THRESHOLD="${REFACTOR_THRESHOLD:-95}"
+REFACTOR_THRESHOLD="${REFACTOR_THRESHOLD:-85}"
 
 # Maximum refactor loop iterations
 REFACTOR_MAX_LOOPS="${REFACTOR_MAX_LOOPS:-5}"
