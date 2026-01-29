@@ -53,10 +53,9 @@ Do NOT fetch PR files via GitHub API - agents read local files.
 
 14. **Write State**:
     ```python
-    is_first_refactor = (state.phase != "refactor")
     new_state = {
         "phase": "refactor",
-        "iteration": 0 if is_first_refactor else state.iteration + 1,
+        "iteration": state.iteration + 1,
         "cumulative_score": state.cumulative_score,
         "confidence": confidence,
         "refactor_confidence": skill_confidence
