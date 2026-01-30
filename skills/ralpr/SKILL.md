@@ -18,6 +18,8 @@ You MUST follow these steps **sequentially** — no parallel execution, no skipp
 
 **Step 3 — Execute phase workflow.** Follow the phase documentation step-by-step.
 
+**Critical** - ALWAYS work in worktrees (described in every phase), otherwise parallel agents might work on the same branch resulting in collisions!
+
 ## Authority Rules
 
 1. **Docs over scripts.** Documentation (`SKILL.md`, `phase-*.md`, `comment-formats.md`, `iteration-state.md`) is authoritative. If script behavior or output contradicts docs, follow docs and flag the discrepancy to the user.
