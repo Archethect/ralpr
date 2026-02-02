@@ -88,6 +88,15 @@ get_default_branch() {
   gh api repos/:owner/:repo --jq '.default_branch'
 }
 
+# Get the branch to base features on (configurable override)
+get_base_branch() {
+  if [[ -n "${RALPR_BASE_BRANCH:-}" ]]; then
+    echo "$RALPR_BASE_BRANCH"
+    return
+  fi
+  get_default_branch
+}
+
 # Get current branch name
 get_current_branch() {
   git branch --show-current

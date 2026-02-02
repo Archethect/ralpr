@@ -1,6 +1,6 @@
 {
   "name": "ralpr",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Ralpr - Ralph Autonomous Loop for Pull-request Readiness. Three-phase architecture (Implementation → Review → Refactor) with fresh context per loop iteration",
   "author": {
     "name": "Archethect"

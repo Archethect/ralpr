@@ -50,7 +50,7 @@ phase1_setup() {
   fi
 
   # Get default branch
-  DEFAULT_BRANCH=$(get_default_branch)
+  DEFAULT_BRANCH=$(get_base_branch)
   if [[ -z "$DEFAULT_BRANCH" ]]; then
     log_error "Could not determine default branch"
     return 1

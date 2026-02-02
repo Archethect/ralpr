@@ -90,7 +90,7 @@ cmd_setup() {
   fi
 
   local default_branch
-  default_branch=$(get_default_branch)
+  default_branch=$(get_base_branch)
 
   if [[ -z "$default_branch" ]]; then
     log_error "No default branch found on remote"
@@ -533,7 +533,7 @@ cmd_branch() {
 
   local branch_name="feature/${issue_num}-${title_slug}"
   local default_branch
-  default_branch=$(get_default_branch)
+  default_branch=$(get_base_branch)
 
   log_info "Creating branch: $branch_name"
 
@@ -638,7 +638,7 @@ cmd_pr() {
       done
 
       if [[ -z "$base" ]]; then
-        base=$(get_default_branch)
+        base=$(get_base_branch)
       fi
 
       log_info "Checking for merge conflicts with $base..."
@@ -677,7 +677,7 @@ cmd_pr() {
       done
 
       if [[ -z "$base" ]]; then
-        base=$(get_default_branch)
+        base=$(get_base_branch)
       fi
 
       log_info "Creating PR..."
