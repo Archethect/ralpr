@@ -43,15 +43,16 @@ Do NOT fetch PR files via GitHub API - agents read local files.
    Task(subagent_type="ralpr:codex-reviewer",
         prompt='Follow your agent instructions to complete the task described by the following input data:\n\n{"pr_number": <N>, "branch": "...", "base_branch": "...", "repo": "<owner>/<repo>", "context": <understand_output>, "focus_areas": <understand_output.focus_areas.codex>}')
    ```
-   - QA/Domain read LOCAL files; Codex uses `gh pr diff`
+    - QA/Domain read LOCAL files; Codex uses `gh pr diff`
 
 9. **Aggregate**: Dedupe by file:line → `issues_this_iteration`, `current_severity = {high: N, medium: N, low: N}`
 
 10. **Discuss**: Have a discussion with ALL reviewers (including yourself) and ask if the issue needs to be fixed.
 
 11. **Decide**: Apply fix thresholds per severity:
+    - You can ALWAYS decide to IMPLEMENT fixes if you think they are needed and hereby overrule reviewers. DO NOT be lazy!
     - **CRITICAL/HIGH**: Fix if >= 2 reviewers agree
-    - **MEDIUM**: Fix if >= 3 reviewers agree
+    - **MEDIUM**: Fix if >= 2 reviewers agree
     - **LOW**: Fix at your discretion
 
     If a required fix seems impossible (e.g., missing test infrastructure, out-of-scope dependency), **STOP and ask the user**. Do NOT skip or rationalize. If the user approves skipping, document the skip reason in the review comment.
