@@ -441,11 +441,21 @@ gh pr checks <PR_NUMBER>
 
 ## Contributing
 
+### Branching
+
+| Branch | Purpose |
+|--------|---------|
+| `release` | Default branch — stable, what users install via the marketplace |
+| `main` | Development branch — **all PRs must target `main`** |
+
+Feature branches are created from `main`. When `main` is ready for release, it is merged into `release`.
+
 ### Setup
 
 ```bash
 git clone https://github.com/Archethect/ralpr.git
 cd ralpr
+git checkout main
 
 # Run Claude Code with the local plugin
 claude --plugin-dir .
