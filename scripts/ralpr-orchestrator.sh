@@ -50,7 +50,7 @@ run_review_iteration() {
   local owner_repo
   owner_repo=$(get_owner_repo)
   local base_branch
-  base_branch=$(get_default_branch)
+  base_branch=$(get_base_branch)
   local current_branch
   current_branch=$(git branch --show-current)
 
@@ -91,7 +91,7 @@ run_refactor_iteration() {
   local owner_repo
   owner_repo=$(get_owner_repo)
   local base_branch
-  base_branch=$(get_default_branch)
+  base_branch=$(get_base_branch)
 
   # Load prompt from template
   local prompt

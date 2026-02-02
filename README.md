@@ -2,7 +2,7 @@
 
 **Autonomous three-phase loop that takes GitHub issues to merge-ready PRs.**
 
-![Version](https://img.shields.io/badge/version-v2.1.0-blue)
+![Version](https://img.shields.io/badge/version-v2.1.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-orange)
 
@@ -234,6 +234,12 @@ All settings are configured via environment variables. Defaults are defined in `
 | `REFACTOR_MAX_LOOPS` | `5` | Maximum refactor iterations |
 | `REFACTOR_WEIGHTS_SKILL` | `0.70` | Weight for skill confidence (sum to 1.0) |
 | `REFACTOR_WEIGHTS_STABILITY` | `0.30` | Weight for test stability (sum to 1.0) |
+
+### Branch Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RALPR_BASE_BRANCH` | *(unset)* | Branch to base features on (overrides GitHub default) |
 
 ### General
 

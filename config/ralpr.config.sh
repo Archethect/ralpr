@@ -32,6 +32,14 @@ REFACTOR_WEIGHTS_SKILL="${REFACTOR_WEIGHTS_SKILL:-0.70}"
 REFACTOR_WEIGHTS_STABILITY="${REFACTOR_WEIGHTS_STABILITY:-0.30}"
 
 # ============================================================================
+# BRANCH SETTINGS
+# ============================================================================
+
+# Branch to base feature branches on (overrides GitHub default)
+# Set to "main" if GitHub default is "release" but features should start from "main"
+RALPR_BASE_BRANCH="${RALPR_BASE_BRANCH:-main}"
+
+# ============================================================================
 # CLAUDE SETTINGS
 # ============================================================================
 
