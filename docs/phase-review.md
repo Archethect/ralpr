@@ -49,13 +49,43 @@ Do NOT fetch PR files via GitHub API - agents read local files.
 
 10. **Discuss**: Have a discussion with ALL reviewers (including yourself) and ask if the issue needs to be fixed.
 
-11. **Decide**: Apply fix thresholds per severity:
-    - You can ALWAYS decide to IMPLEMENT fixes if you think they are needed and hereby overrule reviewers. DO NOT be lazy!
-    - **CRITICAL/HIGH**: Fix if >= 2 reviewers agree
-    - **MEDIUM**: Fix if >= 2 reviewers agree
-    - **LOW**: Fix at your discretion
+11. **Decide (Fix-by-Default)**:
+
+    The default action for every issue is **FIX**. Skipping requires structured justification.
+
+    **Severity rules:**
+    - **CRITICAL/HIGH**: MUST fix. No skip without explicit user approval.
+    - **MEDIUM with >= 2 reviewers agreeing**: MUST fix unless there is a concrete technical reason (not a deferral).
+    - **MEDIUM with 1 reviewer**: Fix unless it would break an explicit acceptance criterion.
+    - **LOW**: Fix at your discretion, but log reasoning for skips.
+
+    **Prohibited skip reasons** (using any of these is grounds for re-evaluation):
+    - "Design decision for a future ticket"
+    - "Acceptable for a skeleton/initial PR"
+    - "Beyond the scope of this ticket"
+    - Any deferral variant that does not cite a specific acceptance criterion conflict
+
+    **Scope-relevance check:** If the issue falls within the CATEGORY of work the PR is doing, it is in scope. A fix is only out of scope if it requires changes to a system or component the PR does not touch.
+
+    **Overrule as obligation:** You are the FINAL reviewer. When you see a concrete improvement to code quality, correctness, or safety — implement it. Not doing so requires justification equivalent to a SKIP.
 
     If a required fix seems impossible (e.g., missing test infrastructure, out-of-scope dependency), **STOP and ask the user**. Do NOT skip or rationalize. If the user approves skipping, document the skip reason in the review comment.
+
+    **Step 11b — Decision Log** (REQUIRED before proceeding to Fix step):
+
+    Produce a structured table for ALL issues:
+
+    ```
+    | ID | Severity | Reviewers | Action | Justification | AC Conflict? |
+    |----|----------|-----------|--------|---------------|--------------|
+    | 1  | HIGH     | QA, Domain | FIX   | —             | —            |
+    | 2  | MEDIUM   | QA, Codex  | FIX   | —             | —            |
+    | 3  | LOW      | Domain     | SKIP  | Cosmetic only, no behavioral impact | No |
+    ```
+
+    - FIX needs no justification (it is the default).
+    - SKIP requires a reason that is NOT on the prohibited list above.
+    - **Circuit breaker:** If > 50% of MEDIUM+ issues are marked SKIP, STOP and re-evaluate. You are likely being lazy.
 
 12. **Fix**: Implement fixes → track `issues_fixed_this_iteration`
 

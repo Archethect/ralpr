@@ -23,7 +23,7 @@ You MUST follow these steps **sequentially** — no parallel execution, no skipp
 ## Authority Rules
 
 1. **Docs over scripts.** Documentation (`SKILL.md`, `phase-*.md`, `comment-formats.md`, `iteration-state.md`) is authoritative. If script behavior or output contradicts docs, follow docs and flag the discrepancy to the user.
-2. **Critical issues must be fixed or escalated.** CRITICAL/HIGH issues: fix if >= 2 reviewers agree. MEDIUM issues: fix if >= 3 reviewers agree. If a fix seems impossible (e.g., missing infrastructure, out-of-scope dependency), STOP and ask the user — never rationalize skipping.
+2. **Fix-by-default.** The default action for every issue is FIX. Skipping requires structured justification per phase-review.md Step 11. Deferral to future tickets is NOT a valid skip reason. Severity thresholds: CRITICAL/HIGH — fix if >= 2 reviewers agree (no skip without user approval). MEDIUM — fix if >= 2 reviewers agree. If a fix seems impossible (e.g., missing infrastructure, out-of-scope dependency), STOP and ask the user — never rationalize skipping.
 3. **Use only documented labels.** Only set labels documented in @../../docs/comment-formats.md for confidence/phase tracking. Scripts may create auxiliary labels (e.g., iteration tracking) — these are operational and read-only for agents. Do not manually create or remove them.
 
 ## Agent Registry

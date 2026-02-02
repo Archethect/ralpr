@@ -29,7 +29,7 @@ You are running Ralpr Review Phase iteration {{ITERATION}}.
 
 3. **Aggregate issues** - Dedupe by file:line, prioritize by severity
 
-4. **Apply fixes** - For high-confidence suggestions (>0.8), apply the fix
+4. **Decide which issues to fix** using the fix-by-default framework (see phase-review.md Step 11). The default action is FIX. Every SKIP requires structured justification — no deferrals to future tickets, no "out of scope" for work within the PR's category. Produce a decision log table (ID, Severity, Reviewers, Action, Justification, AC Conflict?) before implementing any fixes. If > 50% of MEDIUM+ issues are SKIP, stop and re-evaluate.
 
 5. **Run quality gates**:
    - npm test
