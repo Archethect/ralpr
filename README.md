@@ -2,7 +2,7 @@
 
 **Autonomous three-phase loop that takes GitHub issues to merge-ready PRs.**
 
-![Version](https://img.shields.io/badge/version-v2.1.1-blue)
+![Version](https://img.shields.io/badge/version-v3.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-orange)
 
@@ -269,7 +269,92 @@ Quality gates auto-detect the project's language and run appropriate tools:
 
 Detection is automatic based on project files (`package.json`, `Cargo.toml`, `foundry.toml`, `pyproject.toml`, `Makefile`).
 
-## Advanced: Orchestrator
+## Super Loop (v3.0)
+
+The Super Loop continuously runs the full `impl → review → refactor` pipeline for GitHub issues. Multiple loops run in parallel, each in its own tmux pane with full Claude output visibility. Every phase runs in a fresh Docker-isolated Claude session.
+
+### Prerequisites
+
+| Tool | Purpose |
+|------|---------|
+| `tmux` | Pane-based monitoring |
+| `docker` | Container isolation |
+| `claude-docker` | Claude session spawning |
+
+### PATH Setup
+
+The `ralpr` CLI must be callable from any terminal:
+
+```bash
+# Option A: Add to PATH (add to ~/.bashrc or ~/.zshrc)
+export PATH="$HOME/.claude/plugins/cache/local/ralpr/3.0.0/scripts:$PATH"
+
+# Option B: Symlink
+ln -sf "$HOME/.claude/plugins/cache/local/ralpr/3.0.0/scripts/ralpr" "$HOME/.local/bin/ralpr"
+```
+
+### Quick Start
+
+```bash
+# Start a loop for a specific issue
+ralpr loop start --issue 42 --max-cycles 1
+
+# Monitor in tmux
+ralpr loop attach
+
+# Check status (from another terminal)
+ralpr loop status
+
+# Start more loops (auto-select issues)
+ralpr loop start
+ralpr loop start --issue 15
+
+# View logs
+ralpr loop logs loop-1
+ralpr loop logs loop-1 --follow
+
+# Stop a loop
+ralpr loop stop loop-2               # Graceful (finishes current phase)
+ralpr loop stop loop-3 --force       # Immediate kill
+```
+
+### Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `ralpr loop start [--issue N] [--max-cycles N]` | Start a new loop in a tmux pane |
+| `ralpr loop stop <id> [--force]` | Stop a loop (graceful or forced) |
+| `ralpr loop status` | Show status of all loops |
+| `ralpr loop list` | Alias for `status` |
+| `ralpr loop attach` | Attach to tmux monitoring session |
+| `ralpr loop logs <id> [--follow]` | View loop logs |
+
+### How It Works
+
+1. Each `ralpr loop start` creates a tmux pane running a loop orchestrator
+2. The orchestrator picks an issue, spawns `claude-docker` for implementation
+3. After impl completes (detected via `ralpr:impl:done` label), it spawns review sessions
+4. Review iterates until the confidence threshold is met
+5. Refactor iterates until the confidence threshold is met
+6. Cycle repeats with the next issue (or stops at `--max-cycles`)
+
+All phase transitions are detected via GitHub labels — no output parsing.
+
+### Super Loop Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RALPR_TMUX_SESSION` | `ralpr-loops` | tmux session name |
+| `RALPR_LOOP_MAX_CYCLES` | `0` | Default max cycles (0 = infinite) |
+| `RALPR_LOOP_LOG_DIR` | `.ralpr/logs` | Log directory |
+| `RALPR_LOOP_STATE_DIR` | `.ralpr/loops` | Loop state directory |
+| `RALPR_DOCKER_CMD` | `claude-docker` | Docker wrapper command |
+| `RALPR_LABEL_POLL_INTERVAL` | `10` | Seconds between GitHub label polls |
+| `RALPR_LABEL_POLL_TIMEOUT` | `60` | Max seconds to poll for labels |
+
+## Legacy Orchestrator
+
+> **Deprecated in v3.0.** Use `ralpr loop start` instead. The legacy orchestrator is retained for backward compatibility.
 
 The orchestrator (`scripts/ralpr-orchestrator.sh`) automates multi-iteration loops by spawning fresh Claude sessions for each iteration. The `/ralpr` skill runs a **single iteration** — the orchestrator chains them.
 
@@ -322,13 +407,16 @@ ralpr/
 │   ├── domain-expert.md                 # Domain reviewer (Opus)
 │   └── codex-reviewer.md               # Codex MCP reviewer (Opus)
 ├── scripts/
-│   ├── ralpr                            # Main CLI
-│   ├── ralpr-orchestrator.sh            # Multi-iteration session manager
+│   ├── ralpr                            # Main CLI (v3.0 with loop subcommand)
+│   ├── ralpr-superloop.sh              # Super-loop per-pane orchestrator (v3.0)
+│   ├── ralpr-orchestrator.sh            # Legacy multi-iteration session manager
 │   ├── ralpr-implementation.sh          # Phase 1 workflow
 │   ├── ralpr-review.sh                  # Phase 2 workflow
 │   ├── ralpr-refactor.sh               # Phase 3 workflow
 │   ├── lib/
 │   │   ├── common.sh                    # Shared utilities
+│   │   ├── loop-state.sh               # Loop registry & state (v3.0)
+│   │   ├── tmux.sh                     # tmux session/pane management (v3.0)
 │   │   ├── quality-gates.sh             # Auto-detect test/lint/typecheck
 │   │   ├── github-labels.sh             # Label management
 │   │   ├── confidence.sh                # Confidence calculations
@@ -358,7 +446,8 @@ ralpr/
 │   ├── phase-refactor.md               # Phase 3 detailed docs
 │   ├── confidence-formulas.md           # Scoring model docs
 │   ├── comment-formats.md              # Label & comment templates
-│   └── iteration-state.md             # State management docs
+│   ├── iteration-state.md             # State management docs
+│   └── spec-v3-super-loop.md          # Super Loop specification (v3.0)
 └── hooks/
     ├── hooks.json                       # Hook configuration
     ├── session-start.sh                 # Loads skill on session start

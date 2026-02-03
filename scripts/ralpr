@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# ralpr - Ralpr CLI v2.0 (Ralph Autonomous Loop for Pull-request Readiness)
+# ralpr - Ralpr CLI v3.0 (Ralph Autonomous Loop for Pull-request Readiness)
 # Three-phase architecture: Implementation → Review → Refactor
+# Super Loop: Continuous impl→review→refactor pipeline with tmux monitoring
 #
 # Usage: ralpr <command> [options]
 #
@@ -8,6 +9,7 @@
 #   implementation   Run Phase 1: Implement an issue (no loops)
 #   review           Run Phase 2: Review a PR (loops + confidence)
 #   refactor         Run Phase 3: Refactor a PR (loops + confidence)
+#   loop             Super Loop: continuous impl→review→refactor pipeline
 #   setup            Check prerequisites, detect default branch
 #   select           Select next ticket (PR or issue)
 #   claim            Assign ticket to self
@@ -785,6 +787,305 @@ cmd_release() {
 }
 
 # ============================================================================
+# SUBCOMMAND: loop (super-loop management)
+# ============================================================================
+cmd_loop() {
+  source "$SCRIPT_DIR/lib/loop-state.sh"
+  source "$SCRIPT_DIR/lib/tmux.sh"
+
+  if [[ $# -lt 1 ]]; then
+    cmd_loop_help
+    exit 1
+  fi
+
+  local action="$1"
+  shift
+
+  case "$action" in
+    start) cmd_loop_start "$@" ;;
+    stop) cmd_loop_stop "$@" ;;
+    status|list) cmd_loop_status "$@" ;;
+    attach) cmd_loop_attach "$@" ;;
+    logs) cmd_loop_logs "$@" ;;
+    help|--help|-h) cmd_loop_help ;;
+    *)
+      log_error "Unknown loop action: $action"
+      cmd_loop_help
+      exit 1
+      ;;
+  esac
+}
+
+cmd_loop_help() {
+  cat << 'EOF'
+ralpr loop - Super Loop: continuous impl→review→refactor pipeline
+
+Usage: ralpr loop <action> [options]
+
+Actions:
+  start [--issue N] [--max-cycles N]
+      Start a new loop in a tmux pane
+
+  stop <loop-id> [--force]
+      Stop a running loop (graceful or forced)
+
+  status
+      Show status of all loops
+
+  list
+      Alias for status
+
+  attach
+      Attach to the tmux monitoring session
+
+  logs <loop-id> [--follow]
+      View logs for a loop
+
+Examples:
+  ralpr loop start --issue 42 --max-cycles 3
+  ralpr loop start                              # auto-select issue
+  ralpr loop status
+  ralpr loop attach
+  ralpr loop logs loop-1
+  ralpr loop logs loop-1 --follow
+  ralpr loop stop loop-2
+  ralpr loop stop loop-3 --force
+EOF
+}
+
+cmd_loop_start() {
+  local issue=""
+  local max_cycles="${RALPR_LOOP_MAX_CYCLES:-0}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --issue) issue="$2"; shift 2 ;;
+      --max-cycles) max_cycles="$2"; shift 2 ;;
+      *) log_error "Unknown option: $1"; return 1 ;;
+    esac
+  done
+
+  # Check tmux
+  check_tmux || exit 1
+
+  # Ensure session exists
+  ensure_session || exit 1
+
+  # Get next loop ID
+  local loop_num
+  loop_num=$(next_loop_id)
+  local loop_id="loop-${loop_num}"
+
+  log_info "Starting loop: $loop_id"
+
+  # Build the superloop command
+  local superloop_cmd="$SCRIPT_DIR/ralpr-superloop.sh --loop-id $loop_id"
+  [[ -n "$issue" ]] && superloop_cmd+=" --issue $issue"
+  superloop_cmd+=" --max-cycles $max_cycles"
+
+  # Add pane and start the orchestrator
+  local pane_id
+  pane_id=$(add_pane "$superloop_cmd")
+
+  # Rebalance layout
+  rebalance_layout
+
+  # Get the PID of the process in the pane
+  local pane_pid
+  pane_pid=$(tmux display-message -p -t "$pane_id" '#{pane_pid}' 2>/dev/null || echo "0")
+
+  # Register in the loop registry
+  register_loop "$loop_id" "$pane_pid" "$pane_id"
+
+  # Set initial pane title
+  set_pane_title "$pane_id" "$loop_id: starting"
+
+  log_info "Loop $loop_id started in pane $pane_id"
+  log_info "Use 'ralpr loop attach' to monitor"
+
+  ralpr_result "{\"status\":\"started\",\"loop_id\":\"$loop_id\",\"pane_id\":\"$pane_id\"}"
+}
+
+cmd_loop_stop() {
+  local loop_id=""
+  local force=false
+
+  if [[ $# -lt 1 ]]; then
+    log_error "Usage: ralpr loop stop <loop-id> [--force]"
+    exit 1
+  fi
+
+  loop_id="$1"
+  shift
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force) force=true; shift ;;
+      *) log_error "Unknown option: $1"; return 1 ;;
+    esac
+  done
+
+  local state
+  state=$(read_loop_state "$loop_id")
+
+  if [[ "$state" == "{}" ]]; then
+    log_error "Loop $loop_id not found"
+    exit 1
+  fi
+
+  if [[ "$force" == "true" ]]; then
+    log_info "Force-stopping loop $loop_id..."
+
+    # Kill any Docker containers matching this loop's pattern
+    local containers
+    containers=$(docker ps --filter "name=ralpr-${loop_id}" --format '{{.Names}}' 2>/dev/null || echo "")
+    for container in $containers; do
+      log_info "Killing container: $container"
+      docker kill "$container" 2>/dev/null || true
+    done
+
+    # Kill the tmux pane
+    local registry
+    registry=$(_loop_registry_file)
+    if [[ -f "$registry" ]]; then
+      local pane_id
+      pane_id=$(jq -r --arg id "$loop_id" '.loops[$id].tmux_pane // empty' "$registry")
+      if [[ -n "$pane_id" ]]; then
+        kill_pane "$pane_id"
+      fi
+    fi
+
+    # Cleanup
+    cleanup_loop "$loop_id"
+    log_info "Loop $loop_id force-stopped"
+    ralpr_result "{\"status\":\"force_stopped\",\"loop_id\":\"$loop_id\"}"
+  else
+    log_info "Sending stop signal to loop $loop_id..."
+    create_stop_signal "$loop_id"
+    log_info "Loop $loop_id will stop after the current phase completes"
+    ralpr_result "{\"status\":\"stop_signaled\",\"loop_id\":\"$loop_id\"}"
+  fi
+}
+
+cmd_loop_status() {
+  init_loop_registry
+
+  local loops
+  loops=$(list_all_loops)
+
+  if [[ -z "$loops" ]]; then
+    log_info "No loops registered"
+    ralpr_result '{"status":"empty","loops":[]}'
+    return 0
+  fi
+
+  # Print header
+  printf "%-8s | %-10s | %-12s | %-7s | %s\n" "ID" "Issue/PR" "Phase" "Cycle" "Status"
+  printf "%-8s-+-%-10s-+-%-12s-+-%-7s-+-%s\n" "--------" "----------" "------------" "-------" "--------"
+
+  while IFS= read -r loop_json; do
+    [[ -z "$loop_json" ]] && continue
+
+    local id issue pr phase phase_iter cycle max_cycles status
+    id=$(echo "$loop_json" | jq -r '.id // "?"')
+    issue=$(echo "$loop_json" | jq -r '.issue // empty')
+    pr=$(echo "$loop_json" | jq -r '.pr // empty')
+    phase=$(echo "$loop_json" | jq -r '.phase // "—"')
+    phase_iter=$(echo "$loop_json" | jq -r '.phase_iteration // empty')
+    cycle=$(echo "$loop_json" | jq -r '.cycle // 0')
+    max_cycles=$(echo "$loop_json" | jq -r '.max_cycles // 0')
+    status=$(echo "$loop_json" | jq -r '.status // "unknown"')
+
+    # Format issue/pr column
+    local issue_pr="—"
+    if [[ -n "$issue" && -n "$pr" ]]; then
+      issue_pr="#${issue}/PR#${pr}"
+    elif [[ -n "$issue" ]]; then
+      issue_pr="#${issue}"
+    elif [[ -n "$pr" ]]; then
+      issue_pr="PR#${pr}"
+    fi
+
+    # Format phase column
+    local phase_display="$phase"
+    if [[ -n "$phase_iter" && "$phase_iter" != "null" ]]; then
+      phase_display="${phase}:${phase_iter}"
+    fi
+
+    # Format cycle column
+    local cycle_display="${cycle}/${max_cycles}"
+
+    printf "%-8s | %-10s | %-12s | %-7s | %s\n" "$id" "$issue_pr" "$phase_display" "$cycle_display" "$status"
+  done <<< "$loops"
+}
+
+cmd_loop_attach() {
+  attach_session
+}
+
+cmd_loop_logs() {
+  local loop_id=""
+  local follow=false
+
+  if [[ $# -lt 1 ]]; then
+    log_error "Usage: ralpr loop logs <loop-id> [--follow]"
+    exit 1
+  fi
+
+  loop_id="$1"
+  shift
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --follow|-f) follow=true; shift ;;
+      *) log_error "Unknown option: $1"; return 1 ;;
+    esac
+  done
+
+  local log_dir="${RALPR_LOOP_LOG_DIR:-.ralpr/logs}/${loop_id}"
+
+  if [[ ! -d "$log_dir" ]]; then
+    log_error "No logs found for $loop_id"
+    exit 1
+  fi
+
+  if [[ "$follow" == "true" ]]; then
+    # Find the most recent log file and tail it
+    local latest_log
+    latest_log=$(find "$log_dir" -name '*.log' -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+
+    # Fallback for macOS (no -printf)
+    if [[ -z "$latest_log" ]]; then
+      latest_log=$(find "$log_dir" -name '*.log' -type f | xargs ls -t 2>/dev/null | head -1)
+    fi
+
+    if [[ -z "$latest_log" ]]; then
+      log_error "No log files found in $log_dir"
+      exit 1
+    fi
+
+    log_info "Tailing: $latest_log"
+    tail -f "$latest_log"
+  else
+    # Cat the most recent log file
+    local latest_log
+    latest_log=$(find "$log_dir" -name '*.log' -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+
+    if [[ -z "$latest_log" ]]; then
+      latest_log=$(find "$log_dir" -name '*.log' -type f | xargs ls -t 2>/dev/null | head -1)
+    fi
+
+    if [[ -z "$latest_log" ]]; then
+      log_error "No log files found in $log_dir"
+      exit 1
+    fi
+
+    log_info "Showing: $latest_log"
+    cat "$latest_log"
+  fi
+}
+
+# ============================================================================
 # PHASE COMMANDS (delegate to phase scripts)
 # ============================================================================
 cmd_implementation() {
@@ -804,7 +1105,7 @@ cmd_refactor() {
 # ============================================================================
 show_help() {
   cat << 'EOF'
-ralpr - Ralpr CLI v2.0 (Ralph Autonomous Loop for Pull-request Readiness)
+ralpr - Ralpr CLI v3.0 (Ralph Autonomous Loop for Pull-request Readiness)
 
 Three-phase architecture for autonomous ticket processing:
   Phase 1: Implementation - Implement issues using TDD (no loops)
@@ -822,6 +1123,22 @@ Phase Commands:
 
   refactor [--pr N]
       Run Phase 3: Single refactor iteration with refactor skill
+
+Super Loop (host-side orchestration):
+  loop start [--issue N] [--max-cycles N]
+      Start continuous impl→review→refactor pipeline in tmux
+
+  loop stop <id> [--force]
+      Stop a loop (graceful or forced)
+
+  loop status / loop list
+      Show all loop statuses
+
+  loop attach
+      Attach to tmux monitoring session
+
+  loop logs <id> [--follow]
+      View loop logs
 
 Utility Commands:
   setup
@@ -855,6 +1172,8 @@ Examples:
   ralpr review --pr 456                # Review specific PR
   ralpr refactor                       # Auto-select PR ready for refactor
   ralpr --dry-run                      # Preview selection
+  ralpr loop start --issue 42          # Start super loop
+  ralpr loop status                    # View all loops
 EOF
 }
 
@@ -872,6 +1191,9 @@ main() {
     implementation|impl) cmd_implementation "$@" ;;
     review) cmd_review "$@" ;;
     refactor) cmd_refactor "$@" ;;
+
+    # Super Loop
+    loop) cmd_loop "$@" ;;
 
     # Utility commands
     setup) cmd_setup "$@" ;;

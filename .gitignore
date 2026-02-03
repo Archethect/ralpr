@@ -33,3 +33,6 @@ yarn-error.log*
 
 # Codebase map
 docs/.codebase-map.json
+
+# Ralpr super-loop runtime state and logs
+.ralpr/

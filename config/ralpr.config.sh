@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ralpr.config.sh - Ralpr 2.1 configuration
+# ralpr.config.sh - Ralpr 3.0 configuration
 # This file is sourced by Ralpr scripts to get configurable values
 #
 # Override by setting environment variables before running Ralpr
@@ -59,3 +59,28 @@ RALPR_DEBUG="${RALPR_DEBUG:-false}"
 
 # Output directory for Ralpr state/logs
 RALPR_OUTPUT_DIR="${RALPR_OUTPUT_DIR:-.ralpr}"
+
+# ============================================================================
+# SUPER LOOP (v3.0)
+# ============================================================================
+
+# tmux session name for loop monitoring
+RALPR_TMUX_SESSION="${RALPR_TMUX_SESSION:-ralpr-loops}"
+
+# Default max cycles per loop (0 = infinite)
+RALPR_LOOP_MAX_CYCLES="${RALPR_LOOP_MAX_CYCLES:-0}"
+
+# Log directory for loop output
+RALPR_LOOP_LOG_DIR="${RALPR_LOOP_LOG_DIR:-.ralpr/logs}"
+
+# Loop state directory (registry + per-loop state)
+RALPR_LOOP_STATE_DIR="${RALPR_LOOP_STATE_DIR:-.ralpr/loops}"
+
+# Docker wrapper command for spawning Claude sessions
+RALPR_DOCKER_CMD="${RALPR_DOCKER_CMD:-claude-docker}"
+
+# GitHub label polling interval (seconds)
+RALPR_LABEL_POLL_INTERVAL="${RALPR_LABEL_POLL_INTERVAL:-10}"
+
+# GitHub label polling timeout (seconds)
+RALPR_LABEL_POLL_TIMEOUT="${RALPR_LABEL_POLL_TIMEOUT:-60}"
