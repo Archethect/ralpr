@@ -20,7 +20,16 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks so SCRIPT_DIR points to the real file location
+_ralpr_source="${BASH_SOURCE[0]}"
+while [[ -L "$_ralpr_source" ]]; do
+  _ralpr_dir="$(cd "$(dirname "$_ralpr_source")" && pwd)"
+  _ralpr_source="$(readlink "$_ralpr_source")"
+  # Handle relative symlink targets
+  [[ "$_ralpr_source" != /* ]] && _ralpr_source="$_ralpr_dir/$_ralpr_source"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_ralpr_source")" && pwd)"
+unset _ralpr_source _ralpr_dir
 QUERIES_DIR="$SCRIPT_DIR/queries"
 
 # Source common functions
@@ -68,6 +77,22 @@ issue_has_done_pr() {
   done
 
   return 1
+}
+
+# Check if an issue has ANY open linked PR (regardless of review/CI state).
+# Used to skip issues already being worked on.
+_issue_has_open_pr() {
+  local issue_num="$1"
+  local owner repo
+  owner=$(get_owner)
+  repo=$(get_repo)
+
+  local linked_prs
+  linked_prs=$(gh api graphql -f query="$(cat "$QUERIES_DIR/issue-closing-prs.graphql")" \
+    -f owner="$owner" -f repo="$repo" -F issue="$issue_num" \
+    --jq '.data.repository.issue.closedByPullRequestsReferences.nodes[].number' 2>/dev/null)
+
+  [[ -n "$linked_prs" ]]
 }
 
 # ============================================================================
@@ -125,6 +150,90 @@ cmd_setup() {
 # ============================================================================
 # SUBCOMMAND: select
 # ============================================================================
+
+# Helper: check if an issue has unmet dependencies via GitHub's native
+# blockedBy relationship (set through sub-issues / issue dependencies UI).
+_has_unmet_dependencies() {
+  local issue_num="$1"
+  local owner repo
+  owner=$(get_owner)
+  repo=$(get_repo)
+
+  local open_blockers
+  open_blockers=$(gh api graphql \
+    -f query="$(cat "$QUERIES_DIR/issue-dependencies.graphql")" \
+    -f owner="$owner" -f repo="$repo" -F issue="$issue_num" \
+    --jq '[.data.repository.issue.blockedBy.nodes[] | select(.state == "OPEN")] | length' 2>/dev/null || echo "0")
+
+  [[ "$open_blockers" -gt 0 ]]
+}
+
+# Helper: find incomplete ralpr PRs (need review or refactor below threshold)
+# Checks all open unassigned PRs with any ralpr label, not just ralpr:impl:done.
+_find_incomplete_ralpr_prs() {
+  local dry_run="$1"
+  local review_threshold="${REVIEW_THRESHOLD:-85}"
+  local refactor_threshold="${REFACTOR_THRESHOLD:-85}"
+
+  while IFS= read -r pr_json; do
+    [[ -z "$pr_json" ]] && continue
+    local num title review_conf refactor_conf detected_phase
+    num=$(echo "$pr_json" | jq -r '.number')
+    title=$(echo "$pr_json" | jq -r '.title')
+
+    local has_ralpr_label
+    has_ralpr_label=$(echo "$pr_json" | jq -r '[.labels[].name | select(startswith("ralpr:"))] | length')
+    [[ "$has_ralpr_label" -eq 0 ]] && continue
+
+    # Extract review confidence
+    review_conf=$(echo "$pr_json" | jq -r '
+      [.labels[].name | select(test("^ralpr:review:[0-9]+$"))] |
+      if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
+    ')
+
+    # Extract refactor confidence
+    refactor_conf=$(echo "$pr_json" | jq -r '
+      [.labels[].name | select(test("^ralpr:refactor:[0-9]+$"))] |
+      if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
+    ')
+
+    # Check impl:done — if missing, this PR still needs implementation
+    local has_impl_done
+    has_impl_done=$(echo "$pr_json" | jq -r '[.labels[].name | select(. == "ralpr:impl:done")] | length')
+    if [[ "$has_impl_done" -eq 0 ]]; then
+      continue  # skip PRs without impl:done — still in implementation
+    fi
+
+    if [[ "$review_conf" -lt "$review_threshold" ]]; then
+      detected_phase="review"
+    elif [[ "$refactor_conf" -lt "$refactor_threshold" ]]; then
+      detected_phase="refactor"
+    else
+      continue  # both thresholds met, skip
+    fi
+
+    # Return this PR
+    echo "$num|$title|$detected_phase"
+    return 0
+  done < <(gh pr list --state open \
+    --json number,title,labels,assignees,createdAt \
+    --jq '[.[] | select(.assignees | length == 0)] | sort_by(.createdAt) | .[]' 2>/dev/null)
+
+  return 1
+}
+
+# Helper: emit the selection result JSON
+_emit_select_result() {
+  local status="$1" type="$2" num="$3" title="$4" reason="$5" phase="${6:-}"
+
+  local phase_field=""
+  if [[ -n "$phase" ]]; then
+    phase_field=",\"phase\":\"$phase\""
+  fi
+
+  ralpr_result "{\"status\":\"$status\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .)${phase_field},\"reason\":\"$reason\"}"
+}
+
 cmd_select() {
   local issue_num=""
   local pr_num=""
@@ -141,6 +250,9 @@ cmd_select() {
     esac
   done
 
+  local result_status="selected"
+  [[ "$dry_run" == "true" ]] && result_status="dry_run"
+
   # Explicit --pr: validate and return early (skip auto-selection)
   if [[ -n "$pr_num" ]]; then
     local pr_data
@@ -155,12 +267,34 @@ cmd_select() {
     pr_title=$(echo "$pr_data" | jq -r '.title')
     pr_state=$(echo "$pr_data" | jq -r '.state')
 
-    log_info "Using specified PR #$pr_num: $pr_title (state: $pr_state)"
-    if [[ "$dry_run" == "true" ]]; then
-      ralpr_result "{\"status\":\"dry_run\",\"type\":\"pr\",\"number\":$pr_num,\"title\":$(echo "$pr_title" | jq -R .),\"reason\":\"specified\"}"
-    else
-      ralpr_result "{\"status\":\"selected\",\"type\":\"pr\",\"number\":$pr_num,\"title\":$(echo "$pr_title" | jq -R .),\"reason\":\"specified\"}"
+    # Auto-detect phase for explicit PR
+    local detected_phase=""
+    local labels
+    labels=$(echo "$pr_data" | jq -r '.labels[].name' 2>/dev/null || echo "")
+    local has_impl_done
+    has_impl_done=$(echo "$labels" | grep "^ralpr:impl:done$" || echo "")
+    if [[ -n "$has_impl_done" ]]; then
+      local r_conf=0
+      local r_label
+      r_label=$(echo "$labels" | grep "^ralpr:review:[0-9]" | head -1 || echo "")
+      [[ -n "$r_label" ]] && r_conf=$(echo "$r_label" | grep -oE '[0-9]+$' || echo "0")
+      if [[ "$r_conf" -lt "${REVIEW_THRESHOLD:-85}" ]]; then
+        detected_phase="review"
+      else
+        local rf_conf=0
+        local rf_label
+        rf_label=$(echo "$labels" | grep "^ralpr:refactor:[0-9]" | head -1 || echo "")
+        [[ -n "$rf_label" ]] && rf_conf=$(echo "$rf_label" | grep -oE '[0-9]+$' || echo "0")
+        if [[ "$rf_conf" -lt "${REFACTOR_THRESHOLD:-85}" ]]; then
+          detected_phase="refactor"
+        else
+          detected_phase="done"
+        fi
+      fi
     fi
+
+    log_info "Using specified PR #$pr_num: $pr_title (state: $pr_state, phase: ${detected_phase:-unknown})"
+    _emit_select_result "$result_status" "pr" "$pr_num" "$pr_title" "specified" "$detected_phase"
     exit 0
   fi
 
@@ -169,26 +303,19 @@ cmd_select() {
     case "$phase" in
       review)
         log_info "Selecting PR for review phase..."
-        local selected_pr=""
-        local selected_title=""
+        local selected_pr="" selected_title=""
 
-        # Find open PRs with ralpr:impl:done, unassigned, where review confidence < REVIEW_THRESHOLD (or no review label)
         while IFS= read -r pr_json; do
           [[ -z "$pr_json" ]] && continue
-          local pr_num pr_title review_conf
-          pr_num=$(echo "$pr_json" | jq -r '.number')
-          pr_title=$(echo "$pr_json" | jq -r '.title')
-
-          # Extract review confidence from labels (0 if no review label)
+          local p_num p_title review_conf
+          p_num=$(echo "$pr_json" | jq -r '.number')
+          p_title=$(echo "$pr_json" | jq -r '.title')
           review_conf=$(echo "$pr_json" | jq -r '
             [.labels[].name | select(test("^ralpr:review:[0-9]+$"))] |
             if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
           ')
-
           if [[ "$review_conf" -lt "$REVIEW_THRESHOLD" ]]; then
-            selected_pr="$pr_num"
-            selected_title="$pr_title"
-            break
+            selected_pr="$p_num"; selected_title="$p_title"; break
           fi
         done < <(gh pr list --state open --label "ralpr:impl:done" \
           --json number,title,labels,assignees,createdAt \
@@ -199,49 +326,31 @@ cmd_select() {
           ralpr_result '{"status":"none","message":"No PRs ready for review"}'
           exit 1
         fi
-
         log_info "Selected PR #$selected_pr for review: $selected_title"
-        if [[ "$dry_run" == "true" ]]; then
-          ralpr_result "{\"status\":\"dry_run\",\"type\":\"pr\",\"number\":$selected_pr,\"title\":$(echo "$selected_title" | jq -R .),\"reason\":\"review_needed\"}"
-        else
-          ralpr_result "{\"status\":\"selected\",\"type\":\"pr\",\"number\":$selected_pr,\"title\":$(echo "$selected_title" | jq -R .),\"reason\":\"review_needed\"}"
-        fi
+        _emit_select_result "$result_status" "pr" "$selected_pr" "$selected_title" "review_needed" "review"
         exit 0
         ;;
 
       refactor)
         log_info "Selecting PR for refactor phase..."
-        local selected_pr=""
-        local selected_title=""
+        local selected_pr="" selected_title=""
 
-        # Find open PRs with review confidence >= REVIEW_THRESHOLD, unassigned, where refactor confidence < REFACTOR_THRESHOLD (or no refactor label)
         while IFS= read -r pr_json; do
           [[ -z "$pr_json" ]] && continue
-          local pr_num pr_title review_conf refactor_conf
-          pr_num=$(echo "$pr_json" | jq -r '.number')
-          pr_title=$(echo "$pr_json" | jq -r '.title')
-
-          # Extract review confidence
+          local p_num p_title review_conf refactor_conf
+          p_num=$(echo "$pr_json" | jq -r '.number')
+          p_title=$(echo "$pr_json" | jq -r '.title')
           review_conf=$(echo "$pr_json" | jq -r '
             [.labels[].name | select(test("^ralpr:review:[0-9]+$"))] |
             if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
           ')
-
-          # Skip if review not done
-          if [[ "$review_conf" -lt "$REVIEW_THRESHOLD" ]]; then
-            continue
-          fi
-
-          # Extract refactor confidence (0 if no refactor label)
+          if [[ "$review_conf" -lt "$REVIEW_THRESHOLD" ]]; then continue; fi
           refactor_conf=$(echo "$pr_json" | jq -r '
             [.labels[].name | select(test("^ralpr:refactor:[0-9]+$"))] |
             if length > 0 then .[0] | split(":")[2] | tonumber else 0 end
           ')
-
           if [[ "$refactor_conf" -lt "$REFACTOR_THRESHOLD" ]]; then
-            selected_pr="$pr_num"
-            selected_title="$pr_title"
-            break
+            selected_pr="$p_num"; selected_title="$p_title"; break
           fi
         done < <(gh pr list --state open \
           --json number,title,labels,assignees,createdAt \
@@ -252,13 +361,8 @@ cmd_select() {
           ralpr_result '{"status":"none","message":"No PRs ready for refactor"}'
           exit 1
         fi
-
         log_info "Selected PR #$selected_pr for refactor: $selected_title"
-        if [[ "$dry_run" == "true" ]]; then
-          ralpr_result "{\"status\":\"dry_run\",\"type\":\"pr\",\"number\":$selected_pr,\"title\":$(echo "$selected_title" | jq -R .),\"reason\":\"refactor_needed\"}"
-        else
-          ralpr_result "{\"status\":\"selected\",\"type\":\"pr\",\"number\":$selected_pr,\"title\":$(echo "$selected_title" | jq -R .),\"reason\":\"refactor_needed\"}"
-        fi
+        _emit_select_result "$result_status" "pr" "$selected_pr" "$selected_title" "refactor_needed" "refactor"
         exit 0
         ;;
 
@@ -278,7 +382,7 @@ cmd_select() {
       exit 1
     fi
     log_info "Using specified issue #$issue_num: $title"
-    ralpr_result "{\"status\":\"selected\",\"type\":\"issue\",\"number\":$issue_num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"specified\"}"
+    _emit_select_result "$result_status" "issue" "$issue_num" "$title" "specified" "impl"
     exit 0
   fi
 
@@ -286,157 +390,146 @@ cmd_select() {
   owner=$(get_owner)
   repo=$(get_repo)
 
-  # Check for PRs needing attention
+  # ---- Priority 1: Incomplete ralpr PRs (need more review or refactor) ----
+  log_info "Checking for incomplete ralpr PRs..."
+  local incomplete_result
+  if incomplete_result=$(_find_incomplete_ralpr_prs "$dry_run"); then
+    local inc_num inc_title inc_phase
+    inc_num=$(echo "$incomplete_result" | cut -d'|' -f1)
+    inc_title=$(echo "$incomplete_result" | cut -d'|' -f2)
+    inc_phase=$(echo "$incomplete_result" | cut -d'|' -f3)
+
+    log_info "Selected PR #$inc_num (incomplete: needs $inc_phase)"
+    _emit_select_result "$result_status" "pr" "$inc_num" "$inc_title" "incomplete_${inc_phase}" "$inc_phase"
+    exit 0
+  fi
+
+  # ---- Priority 2: AI-powered issue selection ----
+  # Fetch ALL open, unassigned issues that aren't already in-progress.
+  # Use Claude to interpret labels and dependencies instead of requiring
+  # hardcoded label names.
+  log_info "Evaluating open issues..."
+  local all_issues
+  all_issues=$(gh issue list --state open --limit 50 \
+    --json number,title,labels,body,assignees \
+    --jq '[.[] | select(.assignees | length == 0) | select((.labels // []) | map(.name) | all(. != "status:in-progress")) | {number, title, labels: [.labels[].name], body: (.body // "" | .[0:300])}] | sort_by(.number)' 2>/dev/null || echo "[]")
+
+  if [[ -n "$all_issues" && "$all_issues" != "[]" ]]; then
+    # Filter out issues that are already being worked on or have unmet dependencies
+    local eligible_nums=()
+    while IFS= read -r num; do
+      [[ -z "$num" ]] && continue
+      if _issue_has_open_pr "$num"; then
+        log_info "  Skipping #$num: has open PR"
+        continue
+      fi
+      if _has_unmet_dependencies "$num"; then
+        log_info "  Skipping #$num: has unmet dependencies"
+        continue
+      fi
+      eligible_nums+=("$num")
+    done < <(echo "$all_issues" | jq -r '.[].number')
+
+    if [[ ${#eligible_nums[@]} -gt 0 ]]; then
+      # Build filtered JSON with only eligible issues
+      local nums_json
+      nums_json=$(printf '%s\n' "${eligible_nums[@]}" | jq -R 'tonumber' | jq -s '.')
+      local filtered_issues
+      filtered_issues=$(echo "$all_issues" | jq --argjson nums "$nums_json" \
+        '[.[] | select(.number as $n | $nums | index($n))]')
+      local issue_count
+      issue_count=$(echo "$filtered_issues" | jq 'length')
+
+      if [[ "$issue_count" -gt 0 ]]; then
+        local selected_num=""
+
+        if [[ "$issue_count" -eq 1 ]]; then
+          selected_num=$(echo "$filtered_issues" | jq -r '.[0].number')
+        else
+          # Use Claude (haiku) to interpret labels/dependencies and pick the best issue
+          log_info "Using AI to select from $issue_count eligible issues..."
+          local ai_prompt
+          ai_prompt=$(cat <<SELECTEOF
+Select the ONE best GitHub issue to work on next from this list.
+Consider:
+- Priority: interpret labels intelligently (bug/critical/urgent/high = higher priority)
+- Dependencies: if body mentions "depends on #X" or "blocked by #X" where #X is still in this list, skip it
+- Prefer bugs and fixes over features when priority is similar
+- Prefer smaller/simpler tasks when priorities are equal
+- Prefer lower issue numbers (older) as tiebreaker
+
+Issues:
+$(echo "$filtered_issues" | jq -c '.[] | {number, title, labels, body}')
+
+Reply with ONLY the issue number. Nothing else.
+SELECTEOF
+          )
+          selected_num=$(claude -p "$ai_prompt" --model haiku 2>/dev/null | grep -oE '[0-9]+' | head -1)
+        fi
+
+        if [[ -n "$selected_num" ]]; then
+          local sel_title
+          sel_title=$(echo "$filtered_issues" | jq -r --argjson n "$selected_num" \
+            '.[] | select(.number == $n) | .title')
+          if [[ -n "$sel_title" ]]; then
+            log_info "Selected issue #$selected_num: $sel_title"
+            _emit_select_result "$result_status" "issue" "$selected_num" "$sel_title" "ai_selected" "impl"
+            exit 0
+          fi
+        fi
+
+        # AI failed — fall back to lowest issue number
+        log_warn "AI selection failed, falling back to oldest issue"
+        selected_num=$(echo "$filtered_issues" | jq -r 'sort_by(.number) | .[0].number')
+        local fb_title
+        fb_title=$(echo "$filtered_issues" | jq -r --argjson n "$selected_num" \
+          '.[] | select(.number == $n) | .title')
+        log_info "Selected issue #$selected_num: $fb_title"
+        _emit_select_result "$result_status" "issue" "$selected_num" "$fb_title" "fallback_oldest" "impl"
+        exit 0
+      fi
+    fi
+  fi
+
+  # ---- Priority 4: PRs needing attention (unresolved comments, failing CI) ----
   log_info "Checking for PRs needing attention..."
   local prs_needing_attention=()
-  local pr_list
-  pr_list=$(gh pr list --state open --json number,title,createdAt,assignees --jq '.[] | select(.assignees | length == 0)')
 
   while IFS= read -r pr_json; do
     [[ -z "$pr_json" ]] && continue
-    local pr_num created_at title
-    pr_num=$(echo "$pr_json" | jq -r '.number')
+    local p_num created_at title
+    p_num=$(echo "$pr_json" | jq -r '.number')
     created_at=$(echo "$pr_json" | jq -r '.createdAt')
     title=$(echo "$pr_json" | jq -r '.title')
 
     local unresolved
     unresolved=$(gh api graphql -f query="$(cat "$QUERIES_DIR/pr-unresolved-threads.graphql")" \
-      -f owner="$owner" -f repo="$repo" -F pr="$pr_num" \
+      -f owner="$owner" -f repo="$repo" -F pr="$p_num" \
       --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
 
     if [[ "$unresolved" -gt 0 ]]; then
-      prs_needing_attention+=("$created_at|pr|$pr_num|$title|unresolved_comments")
+      prs_needing_attention+=("$created_at|pr|$p_num|$title|unresolved_comments")
       continue
     fi
 
     local ci_status
-    ci_status=$(gh pr view "$pr_num" --json statusCheckRollup --jq '.statusCheckRollup[] | select(.conclusion == "FAILURE") | .conclusion' 2>/dev/null | head -1)
+    ci_status=$(gh pr view "$p_num" --json statusCheckRollup --jq '.statusCheckRollup[] | select(.conclusion == "FAILURE") | .conclusion' 2>/dev/null | head -1)
 
     if [[ "$ci_status" == "FAILURE" ]]; then
-      prs_needing_attention+=("$created_at|pr|$pr_num|$title|failing_ci")
+      prs_needing_attention+=("$created_at|pr|$p_num|$title|failing_ci")
     fi
   done < <(gh pr list --state open --json number,title,createdAt,assignees --jq '.[] | select(.assignees | length == 0)' 2>/dev/null)
 
-  # Check for bug issues
-  log_info "Checking for bug issues..."
-  local bug_issues=()
-  local bug_labels=("bug" "type:bug" "kind:bug")
-
-  for label in "${bug_labels[@]}"; do
-    while IFS= read -r issue_json; do
-      [[ -z "$issue_json" ]] && continue
-      local num title
-      num=$(echo "$issue_json" | jq -r '.number')
-      title=$(echo "$issue_json" | jq -r '.title')
-
-      if issue_has_done_pr "$num"; then
-        continue
-      fi
-
-      bug_issues+=("$num|issue|$num|$title|bug")
-    done < <(gh issue list --state open --label "$label" --json number,title,assignees \
-      --jq '.[] | select(.assignees | length == 0)' 2>/dev/null)
-  done
-
-  # Deduplicate bugs
-  local unique_bugs=()
-  local seen_nums=""
-  if [[ ${#bug_issues[@]} -gt 0 ]]; then
-    for bug in "${bug_issues[@]}"; do
-      local num
-      num=$(echo "$bug" | cut -d'|' -f3)
-      if [[ ! "$seen_nums" =~ (^|,)"$num"(,|$) ]]; then
-        unique_bugs+=("$bug")
-        seen_nums="$seen_nums,$num"
-      fi
-    done
-  fi
-  bug_issues=("${unique_bugs[@]+"${unique_bugs[@]}"}")
-
-  # Combine precedence pool
-  local precedence_pool=()
-  precedence_pool+=("${prs_needing_attention[@]+"${prs_needing_attention[@]}"}")
-  precedence_pool+=("${bug_issues[@]+"${bug_issues[@]}"}")
-
-  if [[ ${#precedence_pool[@]} -gt 0 ]]; then
+  if [[ ${#prs_needing_attention[@]} -gt 0 ]]; then
     local selected
-    selected=$(printf '%s\n' "${precedence_pool[@]}" | sort | head -1)
-
+    selected=$(printf '%s\n' "${prs_needing_attention[@]}" | sort | head -1)
     local type num title reason
     type=$(echo "$selected" | cut -d'|' -f2)
     num=$(echo "$selected" | cut -d'|' -f3)
     title=$(echo "$selected" | cut -d'|' -f4)
     reason=$(echo "$selected" | cut -d'|' -f5)
-
     log_info "Selected $type #$num (precedence: $reason)"
-
-    if [[ "$dry_run" == "true" ]]; then
-      ralpr_result "{\"status\":\"dry_run\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"$reason\"}"
-    else
-      ralpr_result "{\"status\":\"selected\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"$reason\"}"
-    fi
-    exit 0
-  fi
-
-  # Check feature issues by priority
-  log_info "Checking feature issues..."
-  local feature_issues=()
-  local priority_labels=("priority:p0" "P0" "priority:p1" "P1" "priority:p2" "P2")
-
-  for label in "${priority_labels[@]}"; do
-    while IFS= read -r issue_json; do
-      [[ -z "$issue_json" ]] && continue
-      local num title
-      num=$(echo "$issue_json" | jq -r '.number')
-      title=$(echo "$issue_json" | jq -r '.title')
-
-      local body
-      body=$(gh issue view "$num" --json body --jq '.body' 2>/dev/null || echo "")
-      local has_unmet_deps=false
-
-      if [[ "$body" =~ [Dd]epends\ on:?\ *#([0-9]+) ]]; then
-        local dep_num="${BASH_REMATCH[1]}"
-        local dep_state
-        dep_state=$(gh issue view "$dep_num" --json state --jq '.state' 2>/dev/null || echo "OPEN")
-        if [[ "$dep_state" != "CLOSED" ]]; then
-          has_unmet_deps=true
-        fi
-      fi
-
-      if [[ "$has_unmet_deps" == "false" ]]; then
-        if issue_has_done_pr "$num"; then
-          continue
-        fi
-
-        local priority_rank=9
-        case "$label" in
-          priority:p0|P0) priority_rank=0 ;;
-          priority:p1|P1) priority_rank=1 ;;
-          priority:p2|P2) priority_rank=2 ;;
-        esac
-        feature_issues+=("$priority_rank|$num|issue|$num|$title|feature_$label")
-      fi
-    done < <(gh issue list --state open --label "$label" --json number,title,assignees \
-      --jq '.[] | select(.assignees | length == 0)' 2>/dev/null)
-  done
-
-  if [[ ${#feature_issues[@]} -gt 0 ]]; then
-    local selected
-    selected=$(printf '%s\n' "${feature_issues[@]}" | sort -t'|' -k1,1n -k2,2n | head -1)
-
-    local type num title reason
-    type=$(echo "$selected" | cut -d'|' -f3)
-    num=$(echo "$selected" | cut -d'|' -f4)
-    title=$(echo "$selected" | cut -d'|' -f5)
-    reason=$(echo "$selected" | cut -d'|' -f6)
-
-    log_info "Selected $type #$num (reason: $reason)"
-
-    if [[ "$dry_run" == "true" ]]; then
-      ralpr_result "{\"status\":\"dry_run\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"$reason\"}"
-    else
-      ralpr_result "{\"status\":\"selected\",\"type\":\"$type\",\"number\":$num,\"title\":$(echo "$title" | jq -R .),\"reason\":\"$reason\"}"
-    fi
+    _emit_select_result "$result_status" "$type" "$num" "$title" "$reason"
     exit 0
   fi
 
@@ -464,10 +557,15 @@ cmd_claim() {
     issue)
       log_info "Claiming issue #$number..."
 
-      local assignees
-      assignees=$(gh issue view "$number" --json assignees --jq '.assignees | length')
-      if [[ "$assignees" -gt 0 ]]; then
-        log_error "Issue #$number is already assigned"
+      local current_user
+      current_user=$(gh api user --jq '.login' 2>/dev/null || echo "")
+
+      local assignee_logins
+      assignee_logins=$(gh issue view "$number" --json assignees --jq '[.assignees[].login] | join(",")')
+
+      # Already assigned (by us or someone else) — another loop got here first
+      if [[ -n "$assignee_logins" ]]; then
+        log_error "Issue #$number is already assigned to: $assignee_logins"
         ralpr_result '{"status":"error","code":"already_assigned","message":"Issue already assigned"}'
         exit 1
       fi
@@ -476,6 +574,18 @@ cmd_claim() {
       gh issue edit "$number" --remove-label "status:backlog" 2>/dev/null || true
       gh issue edit "$number" --add-label "status:in-progress" 2>/dev/null || true
 
+      # Post-claim verification: if another user raced us, back off
+      local post_assignees
+      post_assignees=$(gh issue view "$number" --json assignees --jq '[.assignees[].login] | join(",")')
+      local assignee_count
+      assignee_count=$(echo "$post_assignees" | tr ',' '\n' | grep -c . || echo "0")
+      if [[ "$assignee_count" -gt 1 ]]; then
+        log_warn "Race detected on issue #$number (assignees: $post_assignees), releasing"
+        gh issue edit "$number" --remove-assignee @me 2>/dev/null || true
+        ralpr_result '{"status":"error","code":"race_detected","message":"Another user claimed simultaneously"}'
+        exit 1
+      fi
+
       log_info "Claimed issue #$number"
       ralpr_result "{\"status\":\"claimed\",\"type\":\"issue\",\"number\":$number}"
       ;;
@@ -483,15 +593,33 @@ cmd_claim() {
     pr)
       log_info "Claiming PR #$number..."
 
-      local assignees
-      assignees=$(gh pr view "$number" --json assignees --jq '.assignees | length')
-      if [[ "$assignees" -gt 0 ]]; then
-        log_error "PR #$number is already assigned"
+      local current_user
+      current_user=$(gh api user --jq '.login' 2>/dev/null || echo "")
+
+      local assignee_logins
+      assignee_logins=$(gh pr view "$number" --json assignees --jq '[.assignees[].login] | join(",")')
+
+      # Already assigned (by us or someone else) — another loop got here first
+      if [[ -n "$assignee_logins" ]]; then
+        log_error "PR #$number is already assigned to: $assignee_logins"
         ralpr_result '{"status":"error","code":"already_assigned","message":"PR already assigned"}'
         exit 1
       fi
 
       gh pr edit "$number" --add-assignee @me
+
+      # Post-claim verification: if another user raced us, back off
+      local post_assignees
+      post_assignees=$(gh pr view "$number" --json assignees --jq '[.assignees[].login] | join(",")')
+      local assignee_count
+      assignee_count=$(echo "$post_assignees" | tr ',' '\n' | grep -c . || echo "0")
+      if [[ "$assignee_count" -gt 1 ]]; then
+        log_warn "Race detected on PR #$number (assignees: $post_assignees), releasing"
+        gh pr edit "$number" --remove-assignee @me 2>/dev/null || true
+        ralpr_result '{"status":"error","code":"race_detected","message":"Another user claimed simultaneously"}'
+        exit 1
+      fi
+
       log_info "Claimed PR #$number"
       ralpr_result "{\"status\":\"claimed\",\"type\":\"pr\",\"number\":$number}"
       ;;
@@ -805,6 +933,7 @@ cmd_loop() {
     start) cmd_loop_start "$@" ;;
     stop) cmd_loop_stop "$@" ;;
     status|list) cmd_loop_status "$@" ;;
+    clean) cmd_loop_clean "$@" ;;
     attach) cmd_loop_attach "$@" ;;
     logs) cmd_loop_logs "$@" ;;
     help|--help|-h) cmd_loop_help ;;
@@ -823,8 +952,11 @@ ralpr loop - Super Loop: continuous impl→review→refactor pipeline
 Usage: ralpr loop <action> [options]
 
 Actions:
-  start [--issue N] [--max-cycles N]
+  start [--issue N] [--pr N] [--max-cycles N]
       Start a new loop in a tmux pane
+      --issue N    Start from a specific issue (impl phase)
+      --pr N       Start from a specific PR (auto-detect phase)
+      Note: --issue and --pr are mutually exclusive
 
   stop <loop-id> [--force]
       Stop a running loop (graceful or forced)
@@ -835,6 +967,9 @@ Actions:
   list
       Alias for status
 
+  clean
+      Remove dead loops from the registry (releases GitHub assignments)
+
   attach
       Attach to the tmux monitoring session
 
@@ -843,8 +978,10 @@ Actions:
 
 Examples:
   ralpr loop start --issue 42 --max-cycles 3
-  ralpr loop start                              # auto-select issue
+  ralpr loop start --pr 87 --max-cycles 1     # resume from PR
+  ralpr loop start                              # auto-select ticket
   ralpr loop status
+  ralpr loop clean
   ralpr loop attach
   ralpr loop logs loop-1
   ralpr loop logs loop-1 --follow
@@ -855,15 +992,22 @@ EOF
 
 cmd_loop_start() {
   local issue=""
+  local pr=""
   local max_cycles="${RALPR_LOOP_MAX_CYCLES:-0}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --issue) issue="$2"; shift 2 ;;
+      --pr) pr="$2"; shift 2 ;;
       --max-cycles) max_cycles="$2"; shift 2 ;;
       *) log_error "Unknown option: $1"; return 1 ;;
     esac
   done
+
+  if [[ -n "$issue" && -n "$pr" ]]; then
+    log_error "Cannot specify both --issue and --pr"
+    return 1
+  fi
 
   # Check tmux
   check_tmux || exit 1
@@ -878,9 +1022,10 @@ cmd_loop_start() {
 
   log_info "Starting loop: $loop_id"
 
-  # Build the superloop command
-  local superloop_cmd="$SCRIPT_DIR/ralpr-superloop.sh --loop-id $loop_id"
+  # Build the superloop command — pass caller's PWD so the pane runs in the right repo
+  local superloop_cmd="cd $(printf '%q' "$PWD") && $SCRIPT_DIR/ralpr-superloop.sh --loop-id $loop_id"
   [[ -n "$issue" ]] && superloop_cmd+=" --issue $issue"
+  [[ -n "$pr" ]] && superloop_cmd+=" --pr $pr"
   superloop_cmd+=" --max-cycles $max_cycles"
 
   # Add pane and start the orchestrator
@@ -1019,6 +1164,21 @@ cmd_loop_status() {
   done <<< "$loops"
 }
 
+cmd_loop_clean() {
+  init_loop_registry
+
+  local purged
+  purged=$(purge_dead_loops)
+
+  if [[ "$purged" -eq 0 ]]; then
+    log_info "No dead loops to clean up"
+  else
+    log_info "Purged $purged dead loop(s)"
+  fi
+
+  ralpr_result "{\"status\":\"cleaned\",\"purged\":$purged}"
+}
+
 cmd_loop_attach() {
   attach_session
 }
@@ -1125,14 +1285,18 @@ Phase Commands:
       Run Phase 3: Single refactor iteration with refactor skill
 
 Super Loop (host-side orchestration):
-  loop start [--issue N] [--max-cycles N]
+  loop start [--issue N] [--pr N] [--max-cycles N]
       Start continuous impl→review→refactor pipeline in tmux
+      --pr N: enter at detected phase (review/refactor) for existing PR
 
   loop stop <id> [--force]
       Stop a loop (graceful or forced)
 
   loop status / loop list
       Show all loop statuses
+
+  loop clean
+      Remove dead loops from registry
 
   loop attach
       Attach to tmux monitoring session
@@ -1144,8 +1308,12 @@ Utility Commands:
   setup
       Check prerequisites, detect default branch
 
-  select [--issue N] [--phase review|refactor] [--dry-run]
-      Select next ticket (PRs with comments/failing CI > bugs > features)
+  select [--issue N] [--pr N] [--phase review|refactor] [--dry-run]
+      Select next ticket using configurable priority chain:
+        1. Incomplete ralpr PRs (need review/refactor)
+        2. Bug issues (labels: RALPR_BUG_LABELS)
+        3. Feature issues by priority (labels: RALPR_PRIORITY_LABELS)
+        4. PRs with unresolved comments or failing CI
       With --phase: select PR ready for review or refactor phase
 
   claim <issue|pr> <number>

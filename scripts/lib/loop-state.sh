@@ -38,8 +38,33 @@ _loop_stop_file() {
 }
 
 # ============================================================================
-# REGISTRY MANAGEMENT (with file locking)
+# REGISTRY MANAGEMENT (with mkdir-based locking — POSIX portable)
 # ============================================================================
+
+# Acquire an exclusive lock using mkdir (atomic on all POSIX systems).
+# Spins with short sleeps; gives up after ~5 seconds then forces stale cleanup.
+_acquire_lock() {
+  local lockdir="$1"
+  local attempts=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    attempts=$((attempts + 1))
+    if [[ $attempts -ge 50 ]]; then
+      log_debug "Removing stale lock: $lockdir"
+      rm -rf "$lockdir"
+      if mkdir "$lockdir" 2>/dev/null; then
+        return 0
+      fi
+      log_error "Failed to acquire lock after stale cleanup: $lockdir"
+      return 1
+    fi
+    sleep 0.1
+  done
+}
+
+_release_lock() {
+  local lockdir="$1"
+  rm -rf "$lockdir"
+}
 
 # Initialize the loop registry if it doesn't exist
 init_loop_registry() {
@@ -56,21 +81,23 @@ init_loop_registry() {
   fi
 }
 
-# Get the next loop ID and increment the counter (atomic with flock)
+# Get the next loop ID and increment the counter (atomic with mkdir lock)
 next_loop_id() {
   local registry
   registry=$(_loop_registry_file)
+  local lockdir="${registry}.lock"
 
   init_loop_registry
 
+  _acquire_lock "$lockdir" || return 1
+
   local next_id
-  (
-    flock -x 200
-    next_id=$(jq -r '.next_id' "$registry")
-    jq ".next_id = $((next_id + 1))" "$registry" > "${registry}.tmp"
-    mv "${registry}.tmp" "$registry"
-    echo "$next_id"
-  ) 200>"${registry}.lock"
+  next_id=$(jq -r '.next_id' "$registry")
+  jq ".next_id = $((next_id + 1))" "$registry" > "${registry}.tmp"
+  mv "${registry}.tmp" "$registry"
+
+  _release_lock "$lockdir"
+  echo "$next_id"
 }
 
 # Register a new loop in the registry
@@ -80,19 +107,21 @@ register_loop() {
   local pane="$3"
   local registry
   registry=$(_loop_registry_file)
+  local lockdir="${registry}.lock"
 
   init_loop_registry
 
   local created_at
   created_at=$(date -u "+%Y-%m-%dT%H:%M:%SZ")
 
-  (
-    flock -x 200
-    jq --arg id "$id" --argjson pid "$pid" --arg pane "$pane" --arg ts "$created_at" \
-      '.loops[$id] = {"pid": $pid, "tmux_pane": $pane, "created_at": $ts}' \
-      "$registry" > "${registry}.tmp"
-    mv "${registry}.tmp" "$registry"
-  ) 200>"${registry}.lock"
+  _acquire_lock "$lockdir" || return 1
+
+  jq --arg id "$id" --argjson pid "$pid" --arg pane "$pane" --arg ts "$created_at" \
+    '.loops[$id] = {"pid": $pid, "tmux_pane": $pane, "created_at": $ts}' \
+    "$registry" > "${registry}.tmp"
+  mv "${registry}.tmp" "$registry"
+
+  _release_lock "$lockdir"
 
   # Create the loop state directory
   mkdir -p "$(_loop_dir "$id")"
@@ -104,14 +133,16 @@ unregister_loop() {
   local id="$1"
   local registry
   registry=$(_loop_registry_file)
+  local lockdir="${registry}.lock"
 
   [[ ! -f "$registry" ]] && return 0
 
-  (
-    flock -x 200
-    jq --arg id "$id" 'del(.loops[$id])' "$registry" > "${registry}.tmp"
-    mv "${registry}.tmp" "$registry"
-  ) 200>"${registry}.lock"
+  _acquire_lock "$lockdir" || return 1
+
+  jq --arg id "$id" 'del(.loops[$id])' "$registry" > "${registry}.tmp"
+  mv "${registry}.tmp" "$registry"
+
+  _release_lock "$lockdir"
 
   log_debug "Unregistered loop $id"
 }
@@ -129,6 +160,12 @@ update_loop_state() {
   local loop_dir
   loop_dir=$(_loop_dir "$id")
 
+  # Validate data is valid JSON before attempting merge
+  if [[ -z "$data" ]] || ! echo "$data" | jq empty 2>/dev/null; then
+    log_warn "update_loop_state: invalid JSON data, skipping"
+    return 0
+  fi
+
   mkdir -p "$loop_dir"
 
   local now
@@ -138,20 +175,26 @@ update_loop_state() {
     jq --argjson new "$data" --arg ts "$now" \
       '. * $new | .last_activity = $ts' \
       "$state_file" > "${state_file}.tmp"
-    mv "${state_file}.tmp" "$state_file"
   else
-    echo "$data" | jq --arg ts "$now" '. + {last_activity: $ts}' > "$state_file"
+    echo "$data" | jq --arg ts "$now" '. + {last_activity: $ts}' > "${state_file}.tmp"
   fi
+  mv "${state_file}.tmp" "$state_file"
 }
 
-# Read loop state (returns JSON or empty object)
+# Read loop state (returns valid JSON or empty object)
 read_loop_state() {
   local id="$1"
   local state_file
   state_file=$(_loop_state_file "$id")
 
   if [[ -f "$state_file" ]]; then
-    cat "$state_file"
+    # Capture output; only use it if jq succeeded (avoids partial JSON on race)
+    local content
+    if content=$(jq '.' "$state_file" 2>/dev/null); then
+      echo "$content"
+    else
+      echo '{}'
+    fi
   else
     echo '{}'
   fi
@@ -197,14 +240,22 @@ list_all_loops() {
   loop_ids=$(jq -r '.loops | keys[]' "$registry" 2>/dev/null)
 
   for id in $loop_ids; do
-    local reg_data state_data
+    local reg_data state_data pid
 
     reg_data=$(jq -r --arg id "$id" '.loops[$id]' "$registry")
     state_data=$(read_loop_state "$id")
+    pid=$(echo "$reg_data" | jq -r '.pid // empty')
 
-    # Merge registry data with state data
-    echo "$reg_data" | jq --argjson state "$state_data" --arg id "$id" \
-      '{id: $id} + . + $state'
+    # Merge registry data with state data, then override status if PID is dead
+    local merged
+    merged=$(echo "$reg_data" | jq -c --argjson state "$state_data" --arg id "$id" \
+      '{id: $id} + . + $state')
+
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      merged=$(echo "$merged" | jq -c '.status = "dead"')
+    fi
+
+    echo "$merged"
   done
 }
 
@@ -225,11 +276,11 @@ cleanup_loop() {
   # Release GitHub assignments
   if [[ -n "$issue" ]]; then
     log_info "Releasing issue #$issue assignment..."
-    gh issue edit "$issue" --remove-assignee @me 2>/dev/null || true
+    gh issue edit "$issue" --remove-assignee @me >/dev/null 2>&1 || true
   fi
   if [[ -n "$pr" ]]; then
     log_info "Releasing PR #$pr assignment..."
-    gh pr edit "$pr" --remove-assignee @me 2>/dev/null || true
+    gh pr edit "$pr" --remove-assignee @me >/dev/null 2>&1 || true
   fi
 
   # Remove state directory
@@ -242,4 +293,30 @@ cleanup_loop() {
   unregister_loop "$id"
 
   log_info "Cleaned up loop $id"
+}
+
+# Purge all dead loops from the registry
+# Returns the number of loops purged
+purge_dead_loops() {
+  local registry
+  registry=$(_loop_registry_file)
+
+  [[ ! -f "$registry" ]] && echo "0" && return 0
+
+  local loop_ids
+  loop_ids=$(jq -r '.loops | keys[]' "$registry" 2>/dev/null)
+  [[ -z "$loop_ids" ]] && echo "0" && return 0
+
+  local count=0
+  for id in $loop_ids; do
+    local pid
+    pid=$(jq -r --arg id "$id" '.loops[$id].pid // empty' "$registry")
+
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      cleanup_loop "$id"
+      count=$((count + 1))
+    fi
+  done
+
+  echo "$count"
 }

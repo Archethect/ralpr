@@ -52,6 +52,15 @@ ensure_session() {
 
   log_info "Creating tmux session: $session"
   tmux new-session -d -s "$session" -n loops
+
+  # Configure session UX
+  tmux set-option -t "$session" mouse on
+  tmux set-option -t "$session" default-terminal "screen-256color"
+  tmux set-option -t "$session" pane-border-status top
+  tmux set-option -t "$session" pane-border-format " #{pane_index}: #{pane_title} "
+  tmux set-option -t "$session" status-right " Detach: Ctrl-B D | Scroll: Ctrl-B [ "
+  tmux set-option -t "$session" history-limit 50000
+
   log_info "tmux session '$session' created"
 }
 
@@ -60,7 +69,7 @@ ensure_session() {
 # ============================================================================
 
 # Add a new pane running the given command, return the pane ID
-# If this is the first loop, uses the initial pane; otherwise splits
+# If this is the first loop, reuses the initial idle pane; otherwise splits.
 add_pane() {
   local cmd="$1"
   local session
@@ -72,20 +81,30 @@ add_pane() {
   local pane_id
 
   if [[ "$pane_count" -eq 1 ]]; then
-    # Check if initial pane is idle (running bash with no child process)
-    local initial_pane_cmd
+    # Check if initial pane is truly idle: must be a shell AND have no children.
+    # A loop running a bash script also shows pane_current_command=bash,
+    # so checking the command alone is not enough.
+    local initial_pane_cmd initial_pane_pid
     initial_pane_cmd=$(tmux display-message -p -t "${session}:loops.0" '#{pane_current_command}' 2>/dev/null || echo "")
+    initial_pane_pid=$(tmux display-message -p -t "${session}:loops.0" '#{pane_pid}' 2>/dev/null || echo "")
 
-    if [[ "$initial_pane_cmd" == "bash" || "$initial_pane_cmd" == "zsh" || "$initial_pane_cmd" == "-bash" || "$initial_pane_cmd" == "-zsh" ]]; then
+    local is_idle=false
+    if [[ "$initial_pane_cmd" =~ ^-?(bash|zsh)$ ]] && [[ -n "$initial_pane_pid" ]]; then
+      local child_count
+      child_count=$(pgrep -P "$initial_pane_pid" 2>/dev/null | wc -l | tr -d ' ')
+      [[ "${child_count:-0}" -eq 0 ]] && is_idle=true
+    fi
+
+    if [[ "$is_idle" == "true" ]]; then
       # Reuse the initial idle pane
       pane_id=$(tmux display-message -p -t "${session}:loops.0" '#{pane_id}')
       tmux send-keys -t "$pane_id" "$cmd" Enter
     else
-      # Initial pane is busy, split
+      # Pane is busy (already running a loop), split
       pane_id=$(tmux split-window -t "${session}:loops" -P -F '#{pane_id}' "$cmd")
     fi
   else
-    # Not the first pane, split
+    # Multiple panes, always split
     pane_id=$(tmux split-window -t "${session}:loops" -P -F '#{pane_id}' "$cmd")
   fi
 

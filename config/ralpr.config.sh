@@ -84,3 +84,17 @@ RALPR_LABEL_POLL_INTERVAL="${RALPR_LABEL_POLL_INTERVAL:-10}"
 
 # GitHub label polling timeout (seconds)
 RALPR_LABEL_POLL_TIMEOUT="${RALPR_LABEL_POLL_TIMEOUT:-60}"
+
+# ============================================================================
+# ISSUE SELECTION
+# ============================================================================
+
+# Priority labels: pipe-separated tiers, comma-separated within tier
+# Tiers are evaluated in order (first tier = highest priority)
+RALPR_PRIORITY_LABELS="${RALPR_PRIORITY_LABELS:-priority:p0,P0|priority:p1,P1|priority:p2,P2}"
+
+# Bug labels (comma-separated)
+RALPR_BUG_LABELS="${RALPR_BUG_LABELS:-bug,type:bug,kind:bug}"
+
+# Dependency patterns (comma-separated regex, each with capture group for issue number)
+RALPR_DEPENDENCY_PATTERNS="${RALPR_DEPENDENCY_PATTERNS:-[Dd]epends on:? *#([0-9]+),[Bb]locked by:? *#([0-9]+)}"
