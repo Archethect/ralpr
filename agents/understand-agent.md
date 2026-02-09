@@ -69,7 +69,7 @@ You ONLY:
 
 1. Fetch PR details:
    ```bash
-   gh pr view $PR_NUMBER --repo "$REPO" --json title,body,files,commits,reviewDecision
+   gh pr view $PR_NUMBER --repo "$REPO" --json title,body,files,commits,reviewDecision,author
    ```
 
 2. Get changed files:
@@ -77,18 +77,40 @@ You ONLY:
    gh pr diff $PR_NUMBER --repo "$REPO" --name-only
    ```
 
-3. Get review comments (if any):
+3. Get review comments with author info:
    ```bash
-   gh api repos/$REPO/pulls/$PR_NUMBER/comments --jq '.[].body'
+   gh api repos/$REPO/pulls/$PR_NUMBER/comments --jq '[.[] | {
+     author: .user.login,
+     body: .body,
+     path: .path,
+     line: .line,
+     created_at: .created_at
+   }]'
    ```
 
-4. Read codebase map for context
+4. Get issue comments (for general PR discussion):
+   ```bash
+   gh api repos/$REPO/issues/$PR_NUMBER/comments --jq '[.[] | {
+     author: .user.login,
+     body: .body,
+     created_at: .created_at
+   }]'
+   ```
 
-5. Summarize:
+5. Identify user directives:
+   - Filter by author: PR author, repository maintainers, CODEOWNERS
+   - Pattern match: `[MUST]`, "please add", "need", "must", "required", "should have", imperative verbs
+   - Exclude: questions, suggestions with "maybe", "could consider"
+   - Assign sequential IDs: UD-1, UD-2, etc.
+
+6. Read codebase map for context
+
+7. Summarize:
    - What the PR changes
    - Files affected
    - Review feedback (if any)
    - Unresolved comments
+   - User directives (binding requirements from authoritative commenters)
 
 ## Output: Issue Mode
 
@@ -135,6 +157,18 @@ You ONLY:
       "comment": "Consider adding input validation"
     }
   ],
+  "user_directives": [
+    {
+      "id": "UD-1",
+      "author": "simondeschu",
+      "author_role": "pr_author",
+      "directive": "Please add real E2E tests for the checkout flow",
+      "directive_type": "requirement",
+      "file": null,
+      "line": null,
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+  ],
   "focus_areas": {
     "qa": ["Test AC1 coverage", "Edge case: empty input"],
     "domain": ["Hook stability", "Error propagation patterns"],
@@ -151,6 +185,28 @@ The `focus_areas` object guides downstream reviewers on what to examine. Each re
 - **qa**: Test coverage gaps, edge cases to verify, AC verification points
 - **domain**: Architecture concerns, pattern usage, security-relevant code paths
 - **codex**: Complex logic areas, potential bugs, areas benefiting from third-party analysis
+
+### user_directives Field
+
+The `user_directives` array contains binding requirements from authoritative commenters. These are NOT suggestions — they are requirements that MUST be addressed.
+
+- **id**: Sequential identifier (UD-1, UD-2, etc.)
+- **author**: GitHub username of the commenter
+- **author_role**: One of `pr_author`, `maintainer`, `codeowner`, or `contributor`
+- **directive**: The extracted requirement text
+- **directive_type**: `requirement` (must do), `clarification` (needs response), or `question` (needs answer)
+- **file/line**: Location if from inline review comment, null otherwise
+- **created_at**: ISO timestamp
+
+**Directive Detection Patterns:**
+- Explicit markers: `[MUST]`, `[REQUIRED]`, `[BLOCKER]`
+- Imperative phrases: "please add", "need to", "must have", "should include", "required"
+- Direct requests: "add tests for", "fix the", "implement", "ensure"
+
+**Exclusion Patterns (not directives):**
+- Questions: "could you", "what if", "would it be possible"
+- Suggestions: "maybe", "consider", "might want to", "optional"
+- Praise: "looks good", "nice work"
 
 ## Extraction Rules
 

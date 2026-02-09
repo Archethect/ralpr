@@ -32,6 +32,40 @@ Do NOT fetch PR files via GitHub API - agents read local files.
    ```
    → store as `understand_output`
 
+7b. **Extract User Directives** (BLOCKING):
+
+    From `understand_output.user_directives`, create a tracking list:
+
+    ```
+    USER_DIRECTIVES:
+    | ID   | Author       | Directive                              | Status  |
+    |------|--------------|----------------------------------------|---------|
+    | UD-1 | simondeschu  | Add real E2E tests for checkout flow   | PENDING |
+    ```
+
+    **Rule:** Every user directive MUST have a matching fix or explicit user approval to skip.
+
+    If `state.user_directives` exists from previous iteration, merge:
+    - Keep `resolved` directives as-is
+    - Keep `skipped_with_approval` directives as-is
+    - For `pending_approval` directives, check for new user responses (see Step 6b)
+
+6b. **Check Pending Directives** (if `state.status == "blocked"`):
+
+    Before proceeding, check for user responses to pending directives:
+
+    1. Fetch comments since last iteration:
+       ```bash
+       gh api repos/$REPO/issues/$PR_NUMBER/comments --jq '[.[] | select(.created_at > "STATE_TIMESTAMP")]'
+       ```
+
+    2. For each pending directive, scan for user responses:
+       - "proceed" / "yes" / "implement" → Mark directive as `approved_for_fix`, continue with fix
+       - "skip approved" / "defer" / "not needed" → Mark as `skipped_with_approval`, continue
+       - No response → Remain blocked, STOP again
+
+    3. If ALL pending directives resolved → Clear blocked status, continue iteration
+
 8. **Review** (3 agents IN PARALLEL):
    ```
    Task(subagent_type="ralpr:qa-reviewer",
@@ -86,6 +120,43 @@ Do NOT fetch PR files via GitHub API - agents read local files.
     - FIX needs no justification (it is the default).
     - SKIP requires a reason that is NOT on the prohibited list above.
     - **Circuit breaker:** If > 50% of MEDIUM+ issues are marked SKIP, STOP and re-evaluate. You are likely being lazy.
+
+    **Step 11c — User Directive Check** (REQUIRED before proceeding):
+
+    For EACH user directive from Step 7b:
+
+    1. Check if a planned fix addresses it → mark `resolved` with fix reference
+    2. If no fix addresses it → it becomes a CRITICAL issue that MUST be fixed
+    3. CRITICAL user directives cannot be skipped without STOPPING
+
+    Produce a directive status table:
+
+    ```
+    | ID   | Author      | Directive                           | Status   | Resolved By      |
+    |------|-------------|-------------------------------------|----------|------------------|
+    | UD-1 | simondeschu | Add E2E tests for checkout flow     | resolved | Issue #3 fix     |
+    | UD-2 | maintainer1 | Validate input on form submission   | PENDING  | —                |
+    ```
+
+    If ANY user directive has status `PENDING` and no agent fix addresses it:
+    → STOP. Post the "User Directive Pending" comment (see @comment-formats.md):
+
+    ```
+    ⚠️ **User Directive Pending**
+
+    @{author} requested: "{directive}"
+
+    Our review did not produce a fix for this. Options:
+    1. I can implement this now (reply 'proceed')
+    2. You can clarify the requirement (reply with details)
+    3. You can approve skipping (reply 'skip approved')
+
+    Waiting for your response before continuing.
+    ```
+
+    Set state to `{"status": "blocked", "reason": "awaiting_user_response", "directive_id": "UD-X"}`.
+    Release the PR claim and STOP this iteration.
+    **Do NOT proceed until user responds.**
 
 12. **Fix**: Implement fixes → track `issues_fixed_this_iteration`
 
@@ -144,3 +215,18 @@ Do NOT fetch PR files via GitHub API - agents read local files.
 RALPR_SCRIPTS/ralpr release pr <N>
 git worktree remove <path> --force  # if worktree
 ```
+
+## Blocking Conditions
+
+The review phase MUST NOT complete (cannot write final state) if:
+
+1. **Unresolved user directives exist** — Every directive needs status `resolved` or `skipped_with_approval`
+2. **Skip without approval** — Any user directive marked as skipped without explicit user approval in comments
+
+If blocked:
+1. Post the "User Directive Pending" comment (see Step 11c)
+2. Set state to `{"status": "blocked", "reason": "awaiting_user_response", "directive_id": "UD-X"}`
+3. Release the PR claim
+4. STOP this iteration
+
+**Confidence cap:** A PR cannot reach 90% confidence if ANY user directive has status `pending_approval`. The maximum achievable confidence while directives are pending is 70%.

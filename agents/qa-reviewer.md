@@ -40,13 +40,20 @@ The `context` field contains pre-fetched PR information:
    cat "$WORKING_DIR/$FILE"
    ```
 
-3. For each changed source file:
+3. Read project test conventions (if available):
+   ```bash
+   cat "$WORKING_DIR/AGENTS.md" 2>/dev/null
+   ```
+   Use any documented test conventions, coverage requirements, and quality
+   gate commands when evaluating test adequacy.
+
+4. For each changed source file:
    - Find corresponding test file
    - Analyze test coverage
    - Check edge case handling
    - Review error handling
 
-4. Use `context.acceptance_criteria` for AC verification (already extracted)
+5. Use `context.acceptance_criteria` for AC verification (already extracted)
 
 ## Focus Areas
 

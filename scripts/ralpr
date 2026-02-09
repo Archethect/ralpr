@@ -209,7 +209,32 @@ _find_incomplete_ralpr_prs() {
     elif [[ "$refactor_conf" -lt "$refactor_threshold" ]]; then
       detected_phase="refactor"
     else
-      continue  # both thresholds met, skip
+      # Both thresholds met — but check for new human feedback
+      local owner repo
+      owner=$(get_owner)
+      repo=$(get_repo)
+
+      # Check if reviewer requested changes — enter at review to read feedback
+      local review_decision
+      review_decision=$(gh pr view "$num" --json reviewDecision --jq '.reviewDecision // empty' 2>/dev/null)
+      if [[ "$review_decision" == "CHANGES_REQUESTED" ]]; then
+        detected_phase="review"
+        echo "$num|$title|$detected_phase"
+        return 0
+      fi
+
+      # Check for unresolved review threads — enter at review to read feedback
+      local unresolved
+      unresolved=$(gh api graphql -f query="$(cat "$QUERIES_DIR/pr-unresolved-threads.graphql")" \
+        -f owner="$owner" -f repo="$repo" -F pr="$num" \
+        --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
+      if [[ "$unresolved" -gt 0 ]]; then
+        detected_phase="review"
+        echo "$num|$title|$detected_phase"
+        return 0
+      fi
+
+      continue  # no human feedback, skip
     fi
 
     # Return this PR
@@ -390,7 +415,7 @@ cmd_select() {
   owner=$(get_owner)
   repo=$(get_repo)
 
-  # ---- Priority 1: Incomplete ralpr PRs (need more review or refactor) ----
+  # ---- Priority 1: Incomplete ralpr PRs (need review/refactor, or have human feedback) ----
   log_info "Checking for incomplete ralpr PRs..."
   local incomplete_result
   if incomplete_result=$(_find_incomplete_ralpr_prs "$dry_run"); then
@@ -404,7 +429,88 @@ cmd_select() {
     exit 0
   fi
 
-  # ---- Priority 2: AI-powered issue selection ----
+  # ---- Priority 2: PRs needing attention (human comments, changes requested, failing CI) ----
+  log_info "Checking for PRs needing attention..."
+  local prs_needing_attention=()
+
+  while IFS= read -r pr_json; do
+    [[ -z "$pr_json" ]] && continue
+    local p_num created_at title
+    p_num=$(echo "$pr_json" | jq -r '.number')
+    created_at=$(echo "$pr_json" | jq -r '.createdAt')
+    title=$(echo "$pr_json" | jq -r '.title')
+
+    # Check for unresolved review threads
+    local unresolved
+    unresolved=$(gh api graphql -f query="$(cat "$QUERIES_DIR/pr-unresolved-threads.graphql")" \
+      -f owner="$owner" -f repo="$repo" -F pr="$p_num" \
+      --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
+
+    if [[ "$unresolved" -gt 0 ]]; then
+      prs_needing_attention+=("$created_at|pr|$p_num|$title|unresolved_comments")
+      continue
+    fi
+
+    # Check for CHANGES_REQUESTED review decision
+    local review_decision
+    review_decision=$(gh pr view "$p_num" --json reviewDecision --jq '.reviewDecision // empty' 2>/dev/null)
+    if [[ "$review_decision" == "CHANGES_REQUESTED" ]]; then
+      prs_needing_attention+=("$created_at|pr|$p_num|$title|changes_requested")
+      continue
+    fi
+
+    # Check for failing CI
+    local ci_status
+    ci_status=$(gh pr view "$p_num" --json statusCheckRollup --jq '.statusCheckRollup[] | select(.conclusion == "FAILURE") | .conclusion' 2>/dev/null | head -1)
+
+    if [[ "$ci_status" == "FAILURE" ]]; then
+      prs_needing_attention+=("$created_at|pr|$p_num|$title|failing_ci")
+    fi
+  done < <(gh pr list --state open --json number,title,createdAt,assignees --jq '.[] | select(.assignees | length == 0)' 2>/dev/null)
+
+  if [[ ${#prs_needing_attention[@]} -gt 0 ]]; then
+    local selected
+    selected=$(printf '%s\n' "${prs_needing_attention[@]}" | sort | head -1)
+    local type num title reason
+    type=$(echo "$selected" | cut -d'|' -f2)
+    num=$(echo "$selected" | cut -d'|' -f3)
+    title=$(echo "$selected" | cut -d'|' -f4)
+    reason=$(echo "$selected" | cut -d'|' -f5)
+
+    # Detect phase from labels
+    local detected_phase=""
+    local pr_labels
+    pr_labels=$(gh pr view "$num" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+    local has_impl_done
+    has_impl_done=$(echo "$pr_labels" | grep "^ralpr:impl:done$" || echo "")
+    if [[ -n "$has_impl_done" ]]; then
+      local r_conf=0
+      local r_label
+      r_label=$(echo "$pr_labels" | grep "^ralpr:review:[0-9]" | head -1 || echo "")
+      [[ -n "$r_label" ]] && r_conf=$(echo "$r_label" | grep -oE '[0-9]+$' || echo "0")
+      if [[ "$r_conf" -lt "${REVIEW_THRESHOLD:-85}" ]]; then
+        detected_phase="review"
+      else
+        local rf_conf=0
+        local rf_label
+        rf_label=$(echo "$pr_labels" | grep "^ralpr:refactor:[0-9]" | head -1 || echo "")
+        [[ -n "$rf_label" ]] && rf_conf=$(echo "$rf_label" | grep -oE '[0-9]+$' || echo "0")
+        if [[ "$rf_conf" -lt "${REFACTOR_THRESHOLD:-85}" ]]; then
+          detected_phase="refactor"
+        else
+          detected_phase="review"  # thresholds met but needs attention → review to read feedback
+        fi
+      fi
+    fi
+    # No impl:done label → default to review (PR needs work, start from review)
+    [[ -z "$detected_phase" ]] && detected_phase="review"
+
+    log_info "Selected $type #$num (attention: $reason, phase: $detected_phase)"
+    _emit_select_result "$result_status" "$type" "$num" "$title" "$reason" "$detected_phase"
+    exit 0
+  fi
+
+  # ---- Priority 3: AI-powered issue selection ----
   # Fetch ALL open, unassigned issues that aren't already in-progress.
   # Use Claude to interpret labels and dependencies instead of requiring
   # hardcoded label names.
@@ -489,48 +595,6 @@ SELECTEOF
         exit 0
       fi
     fi
-  fi
-
-  # ---- Priority 4: PRs needing attention (unresolved comments, failing CI) ----
-  log_info "Checking for PRs needing attention..."
-  local prs_needing_attention=()
-
-  while IFS= read -r pr_json; do
-    [[ -z "$pr_json" ]] && continue
-    local p_num created_at title
-    p_num=$(echo "$pr_json" | jq -r '.number')
-    created_at=$(echo "$pr_json" | jq -r '.createdAt')
-    title=$(echo "$pr_json" | jq -r '.title')
-
-    local unresolved
-    unresolved=$(gh api graphql -f query="$(cat "$QUERIES_DIR/pr-unresolved-threads.graphql")" \
-      -f owner="$owner" -f repo="$repo" -F pr="$p_num" \
-      --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
-
-    if [[ "$unresolved" -gt 0 ]]; then
-      prs_needing_attention+=("$created_at|pr|$p_num|$title|unresolved_comments")
-      continue
-    fi
-
-    local ci_status
-    ci_status=$(gh pr view "$p_num" --json statusCheckRollup --jq '.statusCheckRollup[] | select(.conclusion == "FAILURE") | .conclusion' 2>/dev/null | head -1)
-
-    if [[ "$ci_status" == "FAILURE" ]]; then
-      prs_needing_attention+=("$created_at|pr|$p_num|$title|failing_ci")
-    fi
-  done < <(gh pr list --state open --json number,title,createdAt,assignees --jq '.[] | select(.assignees | length == 0)' 2>/dev/null)
-
-  if [[ ${#prs_needing_attention[@]} -gt 0 ]]; then
-    local selected
-    selected=$(printf '%s\n' "${prs_needing_attention[@]}" | sort | head -1)
-    local type num title reason
-    type=$(echo "$selected" | cut -d'|' -f2)
-    num=$(echo "$selected" | cut -d'|' -f3)
-    title=$(echo "$selected" | cut -d'|' -f4)
-    reason=$(echo "$selected" | cut -d'|' -f5)
-    log_info "Selected $type #$num (precedence: $reason)"
-    _emit_select_result "$result_status" "$type" "$num" "$title" "$reason"
-    exit 0
   fi
 
   log_info "No issues available for selection"
@@ -1309,11 +1373,10 @@ Utility Commands:
       Check prerequisites, detect default branch
 
   select [--issue N] [--pr N] [--phase review|refactor] [--dry-run]
-      Select next ticket using configurable priority chain:
-        1. Incomplete ralpr PRs (need review/refactor)
-        2. Bug issues (labels: RALPR_BUG_LABELS)
-        3. Feature issues by priority (labels: RALPR_PRIORITY_LABELS)
-        4. PRs with unresolved comments or failing CI
+      Select next ticket using priority chain:
+        1. Incomplete ralpr PRs (need review/refactor, or have human feedback)
+        2. PRs needing attention (human comments, changes requested, failing CI)
+        3. Open issues (AI-selected by priority/labels)
       With --phase: select PR ready for review or refactor phase
 
   claim <issue|pr> <number>

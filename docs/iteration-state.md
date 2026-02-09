@@ -11,6 +11,43 @@ State persists as hidden PR comments with **phase-specific markers**:
 - Review: `<!-- RALPR_REVIEW_STATE {...} -->`
 - Refactor: `<!-- RALPR_REFACTOR_STATE {...} -->`
 
+## State Schema
+
+Review state includes user directive tracking:
+
+```json
+{
+  "iteration": 2,
+  "cumulative_score": 25.7,
+  "confidence": 65,
+  "status": "active",
+  "user_directives": [
+    {"id": "UD-1", "status": "resolved", "resolved_by": "commit abc123"},
+    {"id": "UD-2", "status": "pending_approval"}
+  ]
+}
+```
+
+**Directive Status Values:**
+- `pending` — Not yet addressed, needs fix or user response
+- `resolved` — Addressed by a fix (include `resolved_by` reference)
+- `skipped_with_approval` — User explicitly approved skipping
+- `pending_approval` — Waiting for user response (blocks progress)
+
+**Blocked State:**
+When waiting for user response:
+```json
+{
+  "iteration": 2,
+  "status": "blocked",
+  "reason": "awaiting_user_response",
+  "directive_id": "UD-2",
+  "blocked_at": "2024-01-15T10:30:00Z"
+}
+```
+
+**Confidence Cap Rule:** A PR cannot reach 90% confidence if ANY user directive has status `pending_approval`. Maximum achievable is 70% until all directives are resolved or explicitly approved for skip.
+
 ## Read State
 
 **Review Phase:**

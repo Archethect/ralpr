@@ -30,12 +30,19 @@ You receive JSON with:
    cat "$MAP_PATH"
    ```
 
-2. Verify correct branch:
+2. Read project conventions (adapts to any project type):
+   ```bash
+   cat "$WORKING_DIR/AGENTS.md" 2>/dev/null
+   ```
+   Follow any coding conventions, naming patterns, quality gates, and style
+   guidelines defined in the project's AGENTS.md.
+
+3. Verify correct branch:
    ```bash
    git branch --show-current
    ```
 
-3. Ensure dependencies installed:
+4. Ensure dependencies installed:
    ```bash
    npm install 2>/dev/null || true
    ```

@@ -53,6 +53,30 @@ These are **read-only for agents**. Do not manually create, modify, or remove th
 <!-- RALPR_REFACTOR_STATE {"iteration":N,"confidence":Y,"refactor_confidence":Z} -->
 ```
 
+## User Directive Pending
+
+Use this template when a user directive cannot be addressed and requires user response:
+
+```markdown
+⚠️ **User Directive Pending**
+
+@{author} requested: "{directive}"
+
+Our review did not produce a fix for this. Options:
+1. I can implement this now (reply 'proceed')
+2. You can clarify the requirement (reply with details)
+3. You can approve skipping (reply 'skip approved')
+
+Waiting for your response before continuing.
+
+<!-- RALPR_REVIEW_STATE {"iteration":N,"status":"blocked","reason":"awaiting_user_response","directive_id":"UD-X"} -->
+```
+
+**User Response Patterns:**
+- Proceed: "proceed", "yes", "implement", "do it", "go ahead"
+- Skip: "skip approved", "skip", "defer", "not needed", "ignore"
+- Clarify: Any other response is treated as clarification
+
 ## Icons Reference
 
 | Icon | Meaning |
@@ -66,3 +90,4 @@ These are **read-only for agents**. Do not manually create, modify, or remove th
 | 🟡 | Medium severity |
 | 🟢 | Low severity |
 | ✅ | Tests status |
+| ⚠️ | User directive pending |
