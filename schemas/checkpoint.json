@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Ralpr Checkpoint",
+  "description": "State persisted by team-lead after each stage transition",
+  "type": "object",
+  "required": [
+    "current_stage",
+    "tier",
+    "completed_tasks",
+    "committed_shas",
+    "last_completed_stage",
+    "review_verdicts",
+    "cost_so_far",
+    "plan",
+    "quality_iterations",
+    "compact_prompt",
+    "timestamp"
+  ],
+  "properties": {
+    "current_stage": {
+      "type": "string",
+      "description": "Current pipeline stage"
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["S", "M", "L"]
+    },
+    "completed_tasks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "IDs of completed tasks"
+    },
+    "committed_shas": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Git commit SHAs produced"
+    },
+    "last_completed_stage": {
+      "type": "string",
+      "description": "Most recently completed stage"
+    },
+    "review_verdicts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["pass", "fail"]
+      },
+      "description": "Map of reviewer ID to verdict"
+    },
+    "cost_so_far": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Accumulated cost in dollars"
+    },
+    "plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "in_progress", "done"]
+          }
+        }
+      }
+    },
+    "quality_iterations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "task_quality": { "type": "number" },
+          "pr_quality": { "type": "number" }
+        }
+      }
+    },
+    "compact_prompt": {
+      "type": "string",
+      "description": "Prompt used when auto-compaction recovers state"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

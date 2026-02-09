@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Stage Verdict",
+  "description": "Pass/fail verdict for a pipeline stage",
+  "type": "object",
+  "required": ["stage", "verdict", "iteration", "findings"],
+  "properties": {
+    "stage": {
+      "type": "string",
+      "description": "Pipeline stage this verdict is for"
+    },
+    "task": {
+      "type": "string",
+      "description": "Task ID if verdict is for a specific task (task-review stage)"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail"]
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Which quality iteration produced this verdict"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "description", "file", "line"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Finding identifier"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+          },
+          "description": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "suggestion": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

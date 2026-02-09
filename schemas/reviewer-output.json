@@ -1,12 +1,12 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Reviewer Output (QA/Domain/Codex)",
+  "title": "Reviewer Output (code-reviewer/codex)",
   "type": "object",
   "required": ["reviewer", "status", "verdict", "issues"],
   "properties": {
     "reviewer": {
       "type": "string",
-      "enum": ["qa", "domain", "codex"]
+      "enum": ["code-reviewer", "codex"]
     },
     "status": {
       "type": "string",
@@ -14,13 +14,7 @@
     },
     "verdict": {
       "type": "string",
-      "enum": ["APPROVED", "NEEDS_CHANGES"]
-    },
-    "confidence": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1,
-      "description": "Overall confidence in the review"
+      "enum": ["pass", "fail"]
     },
     "issues": {
       "type": "object",
@@ -55,15 +49,28 @@
     "error": {
       "type": "string",
       "description": "Error message if status is error"
+    },
+    "error_code": {
+      "type": "string",
+      "description": "Machine-readable error code (e.g. codex_unavailable)"
     }
   },
   "definitions": {
     "issue": {
       "type": "object",
-      "required": ["id", "title", "location"],
+      "required": ["id", "severity", "title", "location"],
       "properties": {
-        "id": { "type": "string", "pattern": "^(QA|DOM|CDX)-[CIM][0-9]{3}$" },
-        "category": { "enum": ["testing", "edge-case", "error-handling", "security", "architecture", "convention", "performance", "bug", "logic"] },
+        "id": {
+          "type": "string",
+          "pattern": "^(CR|CDX)-[CIM][0-9]{3}$"
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+        },
+        "category": {
+          "enum": ["bug", "security", "architecture", "convention", "performance", "testing", "accessibility", "logic"]
+        },
         "title": { "type": "string" },
         "description": { "type": "string" },
         "location": {
@@ -75,7 +82,7 @@
           },
           "required": ["file"]
         },
-        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "suggested_fix": { "type": "string" },
         "proposed_fix": {
           "type": "object",
           "properties": {

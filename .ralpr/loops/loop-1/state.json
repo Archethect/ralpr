@@ -1,0 +1,9 @@
+{
+  "id": "loop-1",
+  "status": "failed",
+  "cycle": 0,
+  "max_cycles": 1,
+  "started_at": "2026-02-03T09:59:57Z",
+  "last_activity": "2026-02-03T09:59:59Z",
+  "failure_reason": "no_issue"
+}
